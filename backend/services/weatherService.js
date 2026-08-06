@@ -1,28 +1,93 @@
 const axios = require("axios");
 
-const SensorData = require("../models/SensorData");
+const SensorData = require("../models/sensordata");
 
 const WEATHER_LOCATION = "Ratnagiri, Maharashtra";
+
+const getCurrentWeather = async () => {
+  const weatherResponse = await axios.get(
+    `http://api.weatherapi.com/v1/current.json?key=${process.env.WEATHER_API_KEY}&q=${encodeURIComponent(WEATHER_LOCATION)}`
+  );
+
+  const weather = weatherResponse.data.current;
+
+  return {
+    location: WEATHER_LOCATION,
+    temperature: weather.temp_c,
+    humidity: weather.humidity,
+    rainfall: weather.precip_mm,
+    cloud: weather.cloud,
+    windSpeed: weather.wind_kph,
+    weatherCondition: weather.condition.text,
+  };
+};
+
+const buildRecommendation = ({
+  soilMoisture,
+  temperature,
+  rainfall,
+  waterTankLevel,
+}) => {
+  if (rainfall > 3) {
+    return "Rain detected. Irrigation temporarily suspended.";
+  }
+
+  if (soilMoisture < 30) {
+    return "Soil moisture critically low. Irrigation required immediately.";
+  }
+
+  if (temperature > 35) {
+    return "High temperature detected. Increase irrigation frequency.";
+  }
+
+  if (waterTankLevel <= 20) {
+    return "Water tank is low. Refill before running the pump.";
+  }
+
+  return "Field conditions are stable. No immediate irrigation required.";
+};
+
+const createSensorReadingFromHardware = async ({
+  soilMoisture,
+  waterTankLevel = 75,
+  location,
+}) => {
+  const weatherData = await getCurrentWeather();
+
+  const pumpStatus =
+    soilMoisture < 35 &&
+    weatherData.rainfall < 1 &&
+    waterTankLevel > 20
+      ? "ON"
+      : "OFF";
+
+  return SensorData.create({
+    ...weatherData,
+    location: location || weatherData.location,
+    soilMoisture,
+    waterTankLevel,
+    pumpStatus,
+    recommendation: buildRecommendation({
+      soilMoisture,
+      temperature: weatherData.temperature,
+      rainfall: weatherData.rainfall,
+      waterTankLevel,
+    }),
+  });
+};
 
 const fetchAndStoreWeatherData = async () => {
 
   try {
 
-    const weatherResponse = await axios.get(
-      `http://api.weatherapi.com/v1/current.json?key=${process.env.WEATHER_API_KEY}&q=${encodeURIComponent(WEATHER_LOCATION)}`
-    );
-
-    const weather = weatherResponse.data.current;
-
-    const temperature = weather.temp_c;
-
-    const humidity = weather.humidity;
-
-    const rainfall = weather.precip_mm;
-
-    const cloud = weather.cloud;
-
-    const windSpeed = weather.wind_kph;
+    const {
+      temperature,
+      humidity,
+      rainfall,
+      cloud,
+      windSpeed,
+      weatherCondition,
+    } = await getCurrentWeather();
 
     // Intelligent Soil Moisture Logic
 
@@ -110,8 +175,7 @@ const fetchAndStoreWeatherData = async () => {
 
         recommendation,
 
-        weatherCondition:
-          weather.condition.text,
+        weatherCondition,
 
       });
 
@@ -135,4 +199,6 @@ const fetchAndStoreWeatherData = async () => {
 
 module.exports = {
   fetchAndStoreWeatherData,
+  createSensorReadingFromHardware,
+  getCurrentWeather,
 };

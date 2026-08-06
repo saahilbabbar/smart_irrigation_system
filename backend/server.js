@@ -3,11 +3,6 @@ require("dotenv").config();
 const express = require("express");
 const dotenv = require("dotenv");
 const cors = require("cors");
-const {
-  fetchAndStoreWeatherData,
-} = require(
-  "./services/weatherService"
-);
 const connectDB = require("./config/db");
 const authRoutes = require("./routes/authRoutes");
 const sensorRoutes = require("./routes/sensorRoutes");
@@ -46,15 +41,3 @@ const PORT = 3001;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
-
-// Initial Fetch
-
-fetchAndStoreWeatherData();
-
-// Automatic Background Collection
-
-setInterval(() => {
-
-  fetchAndStoreWeatherData();
-
-}, 60000);

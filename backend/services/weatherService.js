@@ -1,6 +1,7 @@
 const axios = require("axios");
 
 const SensorData = require("../models/sensordata");
+const { getCrop, getCropByKey } = require("../config/crops");
 
 const WEATHER_LOCATION = "Ratnagiri, Maharashtra";
 
@@ -27,35 +28,42 @@ const buildRecommendation = ({
   temperature,
   rainfall,
   waterTankLevel,
+  crop,
 }) => {
-  if (rainfall > 3) {
+  if (rainfall >= 1) {
     return "Rain detected. Irrigation temporarily suspended.";
-  }
-
-  if (soilMoisture < 30) {
-    return "Soil moisture critically low. Irrigation required immediately.";
-  }
-
-  if (temperature > 35) {
-    return "High temperature detected. Increase irrigation frequency.";
   }
 
   if (waterTankLevel <= 20) {
     return "Water tank is low. Refill before running the pump.";
   }
 
-  return "Field conditions are stable. No immediate irrigation required.";
+  if (soilMoisture < crop.minMoisture) {
+    return `Soil moisture is below the ${crop.name} target. Irrigation required.`;
+  }
+
+  if (soilMoisture <= crop.maxMoisture) {
+    return `Soil moisture is adequate for ${crop.name}.`;
+  }
+
+  if (temperature > 35) {
+    return "High temperature detected. Monitor moisture and irrigation frequency.";
+  }
+
+  return `Soil moisture is above the ${crop.name} target range. No irrigation required.`;
 };
 
 const createSensorReadingFromHardware = async ({
   soilMoisture,
   waterTankLevel = 75,
   location,
+  cropKey,
 }) => {
   const weatherData = await getCurrentWeather();
+  const crop = await getCropByKey(cropKey);
 
   const pumpStatus =
-    soilMoisture < 35 &&
+    soilMoisture < crop.minMoisture &&
     weatherData.rainfall < 1 &&
     waterTankLevel > 20
       ? "ON"
@@ -66,12 +74,15 @@ const createSensorReadingFromHardware = async ({
     location: location || weatherData.location,
     soilMoisture,
     waterTankLevel,
+    cropKey: crop.key,
+    cropName: crop.name,
     pumpStatus,
     recommendation: buildRecommendation({
       soilMoisture,
       temperature: weatherData.temperature,
       rainfall: weatherData.rainfall,
       waterTankLevel,
+      crop,
     }),
   });
 };
@@ -116,8 +127,10 @@ const fetchAndStoreWeatherData = async () => {
 
     let pumpStatus = "OFF";
 
+    const crop = getCrop();
+
     if (
-      soilMoisture < 35 &&
+      soilMoisture < crop.minMoisture &&
       rainfall < 1 &&
       waterTankLevel > 20
     ) {
@@ -128,15 +141,20 @@ const fetchAndStoreWeatherData = async () => {
 
     let recommendation = "";
 
-    if (rainfall > 3) {
+    if (rainfall >= 1) {
 
       recommendation =
         "Rain detected. Irrigation temporarily suspended.";
 
-    } else if (soilMoisture < 30) {
+    } else if (waterTankLevel <= 20) {
 
       recommendation =
-        "Soil moisture critically low. Irrigation required immediately.";
+        "Water tank is low. Refill before running the pump.";
+
+    } else if (soilMoisture < crop.minMoisture) {
+
+      recommendation =
+        `Soil moisture is below the ${crop.name} target. Irrigation required.`;
 
     } else if (temperature > 35) {
 
@@ -170,6 +188,10 @@ const fetchAndStoreWeatherData = async () => {
         soilMoisture,
 
         waterTankLevel,
+
+        cropKey: crop.key,
+
+        cropName: crop.name,
 
         pumpStatus,
 

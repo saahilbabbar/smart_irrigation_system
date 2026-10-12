@@ -26,6 +26,16 @@ const SensorDataSchema = new mongoose.Schema({
     required: true,
   },
 
+  cropKey: {
+    type: String,
+    default: "sugarcane",
+  },
+
+  cropName: {
+    type: String,
+    default: "Sugarcane",
+  },
+
   pumpStatus: {
     type: String,
     enum: ["ON", "OFF"],

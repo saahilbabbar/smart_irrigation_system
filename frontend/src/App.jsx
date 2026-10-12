@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import axios from "axios";
 
 import {
@@ -46,6 +46,28 @@ function App() {
   const [sensorData, setSensorData] = useState(null);
 
   const [history, setHistory] = useState([]);
+  const [cropOptions, setCropOptions] = useState([]);
+  const [selectedCropKey, setSelectedCropKey] = useState("sugarcane");
+  const [customCrop, setCustomCrop] = useState({
+    name: "", minMoisture: "", maxMoisture: "", waterRequirement: "", waterRequirementUnit: "mm/week",
+  });
+  const [isSavingCustomCrop, setIsSavingCustomCrop] = useState(false);
+  const [customCropSaveMessage, setCustomCropSaveMessage] = useState("");
+  const [activeSection, setActiveSection] = useState("dashboard");
+  const dashboardRef = useRef(null);
+  const analyticsRef = useRef(null);
+  const irrigationRef = useRef(null);
+  const sensorsRef = useRef(null);
+  const reportsRef = useRef(null);
+
+  const fetchCropRequirements = useCallback(async () => {
+    try {
+      const response = await axios.get(`${API_BASE_URL}/crops`);
+      setCropOptions(response.data || []);
+    } catch (error) {
+      console.log("Crop Requirements Fetch Error:", error);
+    }
+  }, []);
 
   // FETCH STORED HISTORY
   const fetchHistoryData = useCallback(async () => {
@@ -108,6 +130,7 @@ function App() {
     const initialFetch = setTimeout(() => {
       fetchHistoryData();
       fetchSensorData();
+      fetchCropRequirements();
     }, 0);
 
     const interval = setInterval(() => {
@@ -118,7 +141,70 @@ function App() {
       clearTimeout(initialFetch);
       clearInterval(interval);
     };
-  }, [fetchHistoryData, fetchSensorData]);
+  }, [fetchHistoryData, fetchSensorData, fetchCropRequirements]);
+
+  const customCropError = useMemo(() => {
+    if (selectedCropKey !== "custom") return "";
+    const min = Number(customCrop.minMoisture);
+    const max = Number(customCrop.maxMoisture);
+    const water = Number(customCrop.waterRequirement);
+    if (!customCrop.name.trim()) return "Enter a crop name.";
+    if (!Number.isFinite(min) || min < 0 || min > 100) return "Minimum moisture must be between 0 and 100%.";
+    if (!Number.isFinite(max) || max < 0 || max > 100 || min >= max) return "Maximum moisture must be higher than the minimum and at most 100%.";
+    if (!Number.isFinite(water) || water <= 0) return "Water requirement must be greater than zero.";
+    if (!customCrop.waterRequirementUnit.trim()) return "Enter a water unit.";
+    return "";
+  }, [customCrop, selectedCropKey]);
+
+  const selectedCrop = useMemo(() => {
+    if (selectedCropKey === "custom") {
+      if (customCropError) return null;
+      return {
+        key: "custom", name: customCrop.name.trim(), minMoisture: Number(customCrop.minMoisture),
+        maxMoisture: Number(customCrop.maxMoisture), waterRequirement: Number(customCrop.waterRequirement),
+        waterRequirementUnit: customCrop.waterRequirementUnit.trim(),
+      };
+    }
+    return cropOptions.find((crop) => crop.key === selectedCropKey) || null;
+  }, [cropOptions, customCrop, customCropError, selectedCropKey]);
+
+  const irrigationDecision = useMemo(() => {
+    if (!sensorData || !selectedCrop) return null;
+    const rainfall = sensorData.rainfall || 0;
+    const tankLevel = sensorData.waterTankLevel || 0;
+    const moisture = sensorData.soilMoisture || 0;
+    if (rainfall >= 1) return { status: "SUSPENDED", message: "Rain detected — irrigation suspended." };
+    if (tankLevel <= 20) return { status: "REFILL TANK", message: "Water tank is low. Refill before running irrigation." };
+    if (moisture < selectedCrop.minMoisture) return { status: "IRRIGATION REQUIRED", message: `Soil moisture is below the ${selectedCrop.name} target. Irrigation required.` };
+    if (moisture <= selectedCrop.maxMoisture) return { status: "MOISTURE ADEQUATE", message: `Soil moisture is within the ${selectedCrop.name} target range.` };
+    return { status: "NO IRRIGATION", message: `Soil moisture is above the ${selectedCrop.name} target range. No irrigation required.` };
+  }, [sensorData, selectedCrop]);
+
+  const saveCustomCrop = async () => {
+    if (customCropError) return;
+
+    setIsSavingCustomCrop(true);
+    setCustomCropSaveMessage("");
+
+    try {
+      const response = await axios.post(`${API_BASE_URL}/crops/custom`, {
+        name: customCrop.name.trim(),
+        minMoisture: Number(customCrop.minMoisture),
+        maxMoisture: Number(customCrop.maxMoisture),
+        waterRequirement: Number(customCrop.waterRequirement),
+        waterRequirementUnit: customCrop.waterRequirementUnit.trim(),
+      });
+
+      const savedCrop = response.data;
+      setCropOptions((currentCrops) => [...currentCrops, savedCrop]);
+      setSelectedCropKey(savedCrop.key);
+      setCustomCropSaveMessage(`${savedCrop.name} saved to MongoDB.`);
+    } catch (error) {
+      setCustomCropSaveMessage(error.response?.data?.error || "Could not save the custom crop.");
+    } finally {
+      setIsSavingCustomCrop(false);
+    }
+  };
 
   // SYSTEM HEALTH
   const getHealthStatus = () => {
@@ -155,30 +241,62 @@ function App() {
       ]
     : [];
 
-  const COLORS = ["#ef4444", "#22c55e"];
+  const COLORS = ["#f6bdc8", "#8ed6b3"];
+
+  const sections = {
+    dashboard: dashboardRef,
+    analytics: analyticsRef,
+    irrigation: irrigationRef,
+    sensors: sensorsRef,
+    reports: reportsRef,
+  };
+
+  const navigateTo = (section) => {
+    setActiveSection(section);
+    sections[section].current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
+  const navItems = [
+    ["dashboard", "⌂", "Dashboard"],
+    ["analytics", "◌", "Analytics"],
+    ["irrigation", "⌁", "Irrigation"],
+    ["sensors", "◉", "Sensors"],
+    ["reports", "✦", "Reports"],
+  ];
 
   return (
     <div style={styles.app}>
       {/* SIDEBAR */}
 
-      <div style={styles.sidebar}>
+      <aside style={styles.sidebar}>
         <h2 style={styles.logo}>
-          🌱 SmartFarm
+          <span style={styles.logoMark}>✦</span> SmartFarm
         </h2>
+        <p style={styles.sidebarCaption}>Grow smarter, gently.</p>
 
-        <div style={styles.menu}>
-          <p>Dashboard</p>
-          <p>Analytics</p>
-          <p>Irrigation</p>
-          <p>Sensors</p>
-          <p>Reports</p>
-        </div>
-      </div>
+        <nav style={styles.menu} aria-label="Dashboard sections">
+          {navItems.map(([section, icon, label]) => (
+            <button
+              key={section}
+              type="button"
+              onClick={() => navigateTo(section)}
+              style={{
+                ...styles.navButton,
+                ...(activeSection === section ? styles.navButtonActive : {}),
+              }}
+            >
+              <span style={styles.navIcon}>{icon}</span>{label}
+            </button>
+          ))}
+        </nav>
+        <div style={styles.sidebarFooter}>Live field insights<br />updated every 5 seconds</div>
+      </aside>
 
       {/* MAIN */}
 
       <div style={styles.main}>
         <motion.h1
+          ref={dashboardRef}
           initial={{ opacity: 0, y: -20 }}
           animate={{ opacity: 1, y: 0 }}
           style={styles.heading}
@@ -197,47 +315,82 @@ function App() {
                 title="Soil Moisture"
                 value={`${sensorData.soilMoisture || 0}%`}
                 icon={<FaSeedling />}
-                color="#22c55e"
+                color="#68be96"
               />
 
               <DashboardCard
                 title="Temperature"
                 value={`${sensorData.temperature || 0}°C`}
                 icon={<FaTemperatureHigh />}
-                color="#f97316"
+                color="#eca06b"
               />
 
               <DashboardCard
                 title="Humidity"
                 value={`${sensorData.humidity || 0}%`}
                 icon={<FaTint />}
-                color="#06b6d4"
+                color="#6abed3"
               />
 
               <DashboardCard
                 title="Water Tank"
                 value={`${sensorData.waterTankLevel || 0}%`}
                 icon={<FaWater />}
-                color="#3b82f6"
+                color="#8aaef0"
               />
 
               <DashboardCard
-                title="Pump Status"
-                value={
-                  sensorData.pumpStatus || "OFF"
-                }
+                title="Irrigation Status"
+                value={irrigationDecision?.status || "SELECT CROP"}
                 icon={<FaPowerOff />}
                 color={
-                  sensorData.pumpStatus === "ON"
-                    ? "#22c55e"
-                    : "#ef4444"
+                  irrigationDecision?.status === "IRRIGATION REQUIRED"
+                    ? "#68be96"
+                    : "#e99aab"
                 }
               />
             </div>
 
+            <motion.div ref={irrigationRef} initial={{ opacity: 0 }} animate={{ opacity: 1 }} style={styles.cropCard}>
+              <h2>🌾 Crop-aware Irrigation</h2>
+              <label style={styles.cropLabel} htmlFor="crop-select">Crop being monitored</label>
+              <select id="crop-select" value={selectedCropKey} onChange={(event) => { setSelectedCropKey(event.target.value); setCustomCropSaveMessage(""); }} style={styles.cropSelect}>
+                {cropOptions.map((crop) => <option key={crop.key} value={crop.key}>{crop.name}</option>)}
+                <option value="custom">Custom Crop</option>
+              </select>
+
+              {selectedCropKey === "custom" && (
+                <div style={styles.customCropGrid}>
+                  <input placeholder="Crop name" value={customCrop.name} onChange={(event) => setCustomCrop({ ...customCrop, name: event.target.value })} style={styles.cropInput} />
+                  <input type="number" min="0" max="100" placeholder="Minimum moisture %" value={customCrop.minMoisture} onChange={(event) => setCustomCrop({ ...customCrop, minMoisture: event.target.value })} style={styles.cropInput} />
+                  <input type="number" min="0" max="100" placeholder="Maximum moisture %" value={customCrop.maxMoisture} onChange={(event) => setCustomCrop({ ...customCrop, maxMoisture: event.target.value })} style={styles.cropInput} />
+                  <input type="number" min="0" placeholder="Water requirement" value={customCrop.waterRequirement} onChange={(event) => setCustomCrop({ ...customCrop, waterRequirement: event.target.value })} style={styles.cropInput} />
+                  <input placeholder="Unit (e.g. mm/week)" value={customCrop.waterRequirementUnit} onChange={(event) => setCustomCrop({ ...customCrop, waterRequirementUnit: event.target.value })} style={styles.cropInput} />
+                  {customCropError && <p style={styles.validationError}>{customCropError}</p>}
+                  <button type="button" onClick={saveCustomCrop} disabled={Boolean(customCropError) || isSavingCustomCrop} style={styles.saveCropButton}>
+                    {isSavingCustomCrop ? "Saving..." : "Save Custom Crop"}
+                  </button>
+                </div>
+              )}
+
+              {customCropSaveMessage && <p style={styles.saveMessage}>{customCropSaveMessage}</p>}
+
+              {selectedCrop && (
+                <div style={styles.cropInfoGrid}>
+                  <div><h3>Selected Crop</h3><p>{selectedCrop.name}</p></div>
+                  <div><h3>Indicative Water Need</h3><p>{selectedCrop.waterRequirement} {selectedCrop.waterRequirementUnit}</p></div>
+                  <div><h3>Target Soil Moisture</h3><p>{selectedCrop.minMoisture}% – {selectedCrop.maxMoisture}%</p></div>
+                  <div><h3>Current Soil Moisture</h3><p>{sensorData.soilMoisture || 0}%</p></div>
+                  <div><h3>Recommendation</h3><p>{irrigationDecision?.message}</p></div>
+                </div>
+              )}
+              <p style={styles.indicativeNote}>Water requirements are indicative reference values; adjust them for local soil, climate, and crop stage.</p>
+            </motion.div>
+
             {/* ENVIRONMENT SECTION */}
 
             <motion.div
+              ref={sensorsRef}
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               style={styles.recommendation}
@@ -296,7 +449,7 @@ function App() {
                 <h3>🤖 AI Recommendation</h3>
 
                 <p style={styles.recommendationText}>
-                  {sensorData.recommendation ||
+                  {irrigationDecision?.message || sensorData.recommendation ||
                     "Soil moisture is stable. Irrigation system operating normally."}
                 </p>
               </div>
@@ -304,7 +457,7 @@ function App() {
 
             {/* CHARTS */}
 
-            <div style={styles.chartGrid}>
+            <div ref={analyticsRef} style={styles.chartGrid}>
               {/* MOISTURE */}
 
               <div style={styles.chartCard}>
@@ -326,8 +479,8 @@ function App() {
                     <Area
                       type="monotone"
                       dataKey="moisture"
-                      stroke="#22c55e"
-                      fill="#22c55e"
+                      stroke="#68be96"
+                      fill="#bdebd2"
                     />
                   </AreaChart>
                 </ResponsiveContainer>
@@ -354,7 +507,7 @@ function App() {
                     <Line
                       type="monotone"
                       dataKey="temperature"
-                      stroke="#f97316"
+                      stroke="#eca06b"
                       strokeWidth={3}
                     />
                   </LineChart>
@@ -383,7 +536,7 @@ function App() {
 
                     <Bar
                       dataKey="humidity"
-                      fill="#06b6d4"
+                      fill="#8bcfdb"
                     />
                   </BarChart>
                 </ResponsiveContainer>
@@ -426,6 +579,7 @@ function App() {
             {/* SYSTEM HEALTH */}
 
             <motion.div
+              ref={reportsRef}
               whileHover={{ scale: 1.02 }}
               style={styles.healthCard}
             >
@@ -438,11 +592,11 @@ function App() {
                   color:
                     getHealthStatus() ===
                     "Excellent"
-                      ? "#22c55e"
+                      ? "#68be96"
                       : getHealthStatus() ===
                         "Moderate"
-                      ? "#facc15"
-                      : "#ef4444",
+                      ? "#e3b85c"
+                      : "#e99aab",
                 }}
               >
                 {getHealthStatus()}
@@ -463,6 +617,8 @@ function DashboardCard({
   icon,
   color,
 }) {
+  const isIrrigationStatus = title === "Irrigation Status";
+
   return (
     <motion.div
       whileHover={{
@@ -479,7 +635,15 @@ function DashboardCard({
 
       <h3>{title}</h3>
 
-      <h1 style={{ color }}>
+      <h1
+        style={{
+          ...styles.cardValue,
+          ...(isIrrigationStatus
+            ? styles.statusValue
+            : styles.numericValue),
+          color,
+        }}
+      >
         {value}
       </h1>
     </motion.div>
@@ -492,58 +656,111 @@ const styles = {
   app: {
     display: "flex",
     minHeight: "100vh",
-    background: "#0f172a",
-    color: "white",
-    fontFamily: "Arial",
+    width: "100%",
+    background: "linear-gradient(135deg, #f7fff9 0%, #edf9f4 48%, #f5f2ff 100%)",
+    color: "#27413a",
+    fontFamily: "Inter, ui-sans-serif, system-ui, sans-serif",
   },
 
   sidebar: {
     width: "240px",
-    background: "#020617",
-    padding: "30px 20px",
-    borderRight: "1px solid #1e293b",
+    flexShrink: 0,
+    position: "sticky",
+    top: 0,
+    height: "100vh",
+    minHeight: "100vh",
+    boxSizing: "border-box",
+    padding: "34px 20px 24px",
+    background: "rgba(255, 255, 255, 0.72)",
+    borderRight: "1px solid #dcece5",
+    backdropFilter: "blur(18px)",
+    display: "flex",
+    flexDirection: "column",
   },
 
   logo: {
-    marginBottom: "50px",
-    fontSize: "28px",
-    color: "#22c55e",
+    margin: 0,
+    fontSize: "27px",
+    color: "#2f7d62",
+    letterSpacing: "-1px",
+  },
+
+  logoMark: { color: "#f3a8b7" },
+
+  sidebarCaption: {
+    margin: "9px 0 42px",
+    color: "#78958b",
+    fontSize: "13px",
   },
 
   menu: {
     display: "flex",
     flexDirection: "column",
-    gap: "25px",
-    fontSize: "18px",
-    color: "#cbd5e1",
+    gap: "9px",
+  },
+
+  navButton: {
+    width: "100%",
+    border: "1px solid transparent",
+    background: "transparent",
+    color: "#55736a",
+    borderRadius: "14px",
+    padding: "13px 14px",
+    textAlign: "left",
+    fontSize: "15px",
+    fontWeight: 650,
+    cursor: "pointer",
+    transition: "background 180ms ease, color 180ms ease, transform 180ms ease",
+  },
+
+  navButtonActive: {
+    background: "#dff5e9",
+    borderColor: "#c8ebd9",
+    color: "#266b54",
+    boxShadow: "0 6px 18px rgba(59, 126, 96, 0.1)",
+  },
+
+  navIcon: { display: "inline-block", width: "24px", color: "#e38e9f" },
+
+  sidebarFooter: {
+    marginTop: "auto",
+    padding: "16px 12px",
+    borderRadius: "14px",
+    background: "#f1f8f4",
+    color: "#78958b",
+    fontSize: "12px",
+    lineHeight: 1.55,
   },
 
   main: {
     flex: 1,
-    padding: "30px",
+    minWidth: 0,
+    padding: "42px clamp(24px, 4vw, 64px) 64px",
   },
 
   heading: {
-    fontSize: "42px",
-    marginBottom: "30px",
+    scrollMarginTop: "24px",
+    fontSize: "clamp(32px, 4vw, 52px)",
+    color: "#27413a",
+    letterSpacing: "-2.2px",
+    margin: "0 0 36px",
   },
 
   cards: {
     display: "grid",
     gridTemplateColumns:
       "repeat(auto-fit, minmax(220px, 1fr))",
-    gap: "20px",
-    marginBottom: "35px",
+    gap: "18px",
+    marginBottom: "28px",
   },
 
   card: {
-    background: "rgba(255,255,255,0.06)",
-    borderRadius: "20px",
-    padding: "25px",
-    backdropFilter: "blur(10px)",
-    boxShadow:
-      "0 8px 20px rgba(0,0,0,0.35)",
-    transition: "0.3s",
+    background: "rgba(255, 255, 255, 0.86)",
+    border: "1px solid rgba(221, 237, 229, 0.9)",
+    borderRadius: "22px",
+    padding: "24px",
+    boxShadow: "0 12px 30px rgba(55, 107, 83, 0.09)",
+    transition: "0.25s ease",
   },
 
   cardIcon: {
@@ -551,12 +768,108 @@ const styles = {
     marginBottom: "15px",
   },
 
+  cardValue: {
+    margin: "16px 0 0",
+    fontWeight: 700,
+  },
+
+  numericValue: {
+    fontSize: "clamp(40px, 4vw, 56px)",
+    lineHeight: 1.1,
+  },
+
+  statusValue: {
+    fontSize: "clamp(24px, 2.2vw, 34px)",
+    lineHeight: 1.15,
+    overflowWrap: "anywhere",
+  },
+
   recommendation: {
-    background:
-      "linear-gradient(to right, #14532d, #166534)",
+    scrollMarginTop: "24px",
+    background: "linear-gradient(135deg, #dcf6e9, #ecf8f0)",
+    color: "#285742",
     padding: "25px",
-    borderRadius: "20px",
-    marginBottom: "35px",
+    borderRadius: "22px",
+    marginBottom: "28px",
+  },
+
+  cropCard: {
+    scrollMarginTop: "24px",
+    background: "rgba(255, 255, 255, 0.88)",
+    border: "1px solid #e0eee7",
+    padding: "25px",
+    borderRadius: "22px",
+    marginBottom: "28px",
+    boxShadow: "0 12px 30px rgba(55, 107, 83, 0.07)",
+  },
+
+  cropLabel: {
+    display: "block",
+    marginTop: "18px",
+    marginBottom: "8px",
+    color: "#55736a",
+  },
+
+  cropSelect: {
+    width: "100%",
+    maxWidth: "360px",
+    padding: "12px",
+    borderRadius: "8px",
+    border: "1px solid #c9e2d5",
+    background: "#fbfffc",
+    color: "#27413a",
+    fontSize: "16px",
+  },
+
+  customCropGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+    gap: "12px",
+    marginTop: "18px",
+  },
+
+  cropInput: {
+    padding: "12px",
+    borderRadius: "8px",
+    border: "1px solid #c9e2d5",
+    background: "#fbfffc",
+    color: "#27413a",
+    fontSize: "15px",
+  },
+
+  validationError: {
+    gridColumn: "1 / -1",
+    color: "#c76376",
+  },
+
+  cropInfoGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+    gap: "16px",
+    marginTop: "22px",
+    textAlign: "left",
+  },
+
+  indicativeNote: {
+    marginTop: "20px",
+    color: "#6c8b80",
+    fontSize: "14px",
+  },
+
+  saveCropButton: {
+    justifySelf: "start",
+    padding: "12px 18px",
+    border: 0,
+    borderRadius: "8px",
+    background: "#a7dfc2",
+    color: "#1e5540",
+    fontWeight: 700,
+    cursor: "pointer",
+  },
+
+  saveMessage: {
+    marginTop: "14px",
+    color: "#2f8a67",
   },
 
   recommendationText: {
@@ -575,31 +888,34 @@ const styles = {
 
   aiBox: {
     marginTop: "25px",
-    background: "rgba(255,255,255,0.08)",
+    background: "rgba(255,255,255,0.64)",
     padding: "20px",
-    borderRadius: "15px",
+    borderRadius: "16px",
   },
 
   chartGrid: {
+    scrollMarginTop: "24px",
     display: "grid",
     gridTemplateColumns:
-      "repeat(auto-fit, minmax(500px, 1fr))",
-    gap: "25px",
+      "repeat(auto-fit, minmax(340px, 1fr))",
+    gap: "18px",
   },
 
   chartCard: {
-    background: "rgba(255,255,255,0.06)",
-    padding: "25px",
-    borderRadius: "20px",
-    backdropFilter: "blur(10px)",
+    background: "rgba(255, 255, 255, 0.88)",
+    border: "1px solid #e0eee7",
+    padding: "24px",
+    borderRadius: "22px",
+    boxShadow: "0 12px 30px rgba(55, 107, 83, 0.07)",
   },
 
   healthCard: {
+    scrollMarginTop: "24px",
     marginTop: "35px",
-    background:
-      "linear-gradient(to right, #1e293b, #334155)",
+    background: "linear-gradient(135deg, #f7e4eb, #eee9ff)",
+    color: "#513e5b",
     padding: "30px",
-    borderRadius: "20px",
+    borderRadius: "22px",
     textAlign: "center",
   },
 };

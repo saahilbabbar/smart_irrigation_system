@@ -1,19 +1,36 @@
 const axios = require("axios");
 
 const SensorData = require("../models/sensordata");
-const { getCrop, getCropByKey } = require("../config/crops");
+const FarmLocation = require("../models/FarmLocation");
+const { getCropByKey } = require("../config/crops");
 
-const WEATHER_LOCATION = "Ratnagiri, Maharashtra";
+const WEATHER_CACHE_TTL_MS = 5 * 60 * 1000;
+let cachedWeather = null;
+let cachedWeatherAt = 0;
+let lastWeatherAttemptAt = 0;
 
-const getCurrentWeather = async () => {
+// Saved dashboard coordinates if set, otherwise WeatherAPI's IP lookup of the
+// backend laptop's public IP (city-level accuracy).
+const getWeatherQuery = async () => {
+  const saved = await FarmLocation.findOne({ key: "default" }).lean();
+  if (saved?.place) return saved.place;
+  if (saved?.lat != null && saved?.lon != null) return `${saved.lat},${saved.lon}`;
+  return "auto:ip";
+};
+
+const getCurrentWeather = async (query) => {
   const weatherResponse = await axios.get(
-    `http://api.weatherapi.com/v1/current.json?key=${process.env.WEATHER_API_KEY}&q=${encodeURIComponent(WEATHER_LOCATION)}`
+    "https://api.weatherapi.com/v1/current.json",
+    {
+      params: { key: process.env.WEATHER_API_KEY, q: query ?? await getWeatherQuery() },
+      timeout: 4000,
+    }
   );
 
-  const weather = weatherResponse.data.current;
+  const { current: weather, location: place } = weatherResponse.data;
 
   return {
-    location: WEATHER_LOCATION,
+    location: [place?.name, place?.region].filter(Boolean).join(", ") || null,
     temperature: weather.temp_c,
     humidity: weather.humidity,
     rainfall: weather.precip_mm,
@@ -23,19 +40,41 @@ const getCurrentWeather = async () => {
   };
 };
 
+const getCachedCurrentWeather = async () => {
+  if (cachedWeather && Date.now() - cachedWeatherAt < WEATHER_CACHE_TTL_MS) {
+    return cachedWeather;
+  }
+  if (Date.now() - lastWeatherAttemptAt < WEATHER_CACHE_TTL_MS) return cachedWeather;
+
+  lastWeatherAttemptAt = Date.now();
+  try {
+    cachedWeather = await getCurrentWeather();
+    cachedWeatherAt = Date.now();
+    return cachedWeather;
+  } catch (error) {
+    console.warn("Weather enrichment unavailable:", error.message);
+    return cachedWeather;
+  }
+};
+
+const clearWeatherCache = () => {
+  cachedWeather = null;
+  cachedWeatherAt = 0;
+  lastWeatherAttemptAt = 0;
+};
+
 const buildRecommendation = ({
   soilMoisture,
   temperature,
   rainfall,
-  waterTankLevel,
   crop,
 }) => {
-  if (rainfall >= 1) {
-    return "Rain detected. Irrigation temporarily suspended.";
+  if (soilMoisture === null || soilMoisture === undefined) {
+    return "Soil sensor unavailable. Irrigation recommendation paused.";
   }
 
-  if (waterTankLevel <= 20) {
-    return "Water tank is low. Refill before running the pump.";
+  if (rainfall !== null && rainfall !== undefined && rainfall >= 1) {
+    return "Rain detected. Irrigation temporarily suspended.";
   }
 
   if (soilMoisture < crop.minMoisture) {
@@ -54,173 +93,51 @@ const buildRecommendation = ({
 };
 
 const createSensorReadingFromHardware = async ({
+  soilRaw,
   soilMoisture,
-  waterTankLevel = 75,
+  soilCondition,
+  soilSensorOk,
+  temperature,
+  humidity,
+  dhtSensorOk,
   location,
   cropKey,
 }) => {
-  const weatherData = await getCurrentWeather();
+  const weatherData = await getCachedCurrentWeather() || {};
   const crop = await getCropByKey(cropKey);
 
   const pumpStatus =
+    soilSensorOk &&
     soilMoisture < crop.minMoisture &&
-    weatherData.rainfall < 1 &&
-    waterTankLevel > 20
+    (weatherData.rainfall == null || weatherData.rainfall < 1)
       ? "ON"
       : "OFF";
 
   return SensorData.create({
     ...weatherData,
-    location: location || weatherData.location,
+    location: location || weatherData.location || null,
+    soilRaw,
     soilMoisture,
-    waterTankLevel,
+    soilCondition,
+    soilSensorOk,
+    temperature: dhtSensorOk ? temperature : null,
+    humidity: dhtSensorOk ? humidity : null,
+    dhtSensorOk,
     cropKey: crop.key,
     cropName: crop.name,
     pumpStatus,
     recommendation: buildRecommendation({
       soilMoisture,
-      temperature: weatherData.temperature,
+      temperature: dhtSensorOk ? temperature : null,
       rainfall: weatherData.rainfall,
-      waterTankLevel,
       crop,
     }),
   });
 };
 
-const fetchAndStoreWeatherData = async () => {
-
-  try {
-
-    const {
-      temperature,
-      humidity,
-      rainfall,
-      cloud,
-      windSpeed,
-      weatherCondition,
-    } = await getCurrentWeather();
-
-    // Intelligent Soil Moisture Logic
-
-    let soilMoisture = 50;
-
-    soilMoisture += rainfall * 4;
-
-    soilMoisture += humidity * 0.15;
-
-    soilMoisture -= temperature * 0.5;
-
-    soilMoisture -= windSpeed * 0.1;
-
-    soilMoisture += cloud * 0.05;
-
-    soilMoisture = Math.max(
-      10,
-      Math.min(100, Math.round(soilMoisture))
-    );
-
-    // Water Tank
-
-    const waterTankLevel = 75;
-
-    // Pump Logic
-
-    let pumpStatus = "OFF";
-
-    const crop = getCrop();
-
-    if (
-      soilMoisture < crop.minMoisture &&
-      rainfall < 1 &&
-      waterTankLevel > 20
-    ) {
-      pumpStatus = "ON";
-    }
-
-    // AI Recommendation
-
-    let recommendation = "";
-
-    if (rainfall >= 1) {
-
-      recommendation =
-        "Rain detected. Irrigation temporarily suspended.";
-
-    } else if (waterTankLevel <= 20) {
-
-      recommendation =
-        "Water tank is low. Refill before running the pump.";
-
-    } else if (soilMoisture < crop.minMoisture) {
-
-      recommendation =
-        `Soil moisture is below the ${crop.name} target. Irrigation required.`;
-
-    } else if (temperature > 35) {
-
-      recommendation =
-        "High temperature detected. Increase irrigation frequency.";
-
-    } else {
-
-      recommendation =
-        "Field conditions are stable. No immediate irrigation required.";
-
-    }
-
-    // Store in MongoDB
-
-    const savedData =
-      await SensorData.create({
-
-        location: WEATHER_LOCATION,
-
-        temperature,
-
-        humidity,
-
-        rainfall,
-
-        cloud,
-
-        windSpeed,
-
-        soilMoisture,
-
-        waterTankLevel,
-
-        cropKey: crop.key,
-
-        cropName: crop.name,
-
-        pumpStatus,
-
-        recommendation,
-
-        weatherCondition,
-
-      });
-
-    console.log(
-      "Weather data stored:",
-      savedData._id
-    );
-
-    return savedData;
-
-  } catch (error) {
-
-    console.log(
-      "Weather Service Error:",
-      error.message
-    );
-
-  }
-
-};
-
 module.exports = {
-  fetchAndStoreWeatherData,
   createSensorReadingFromHardware,
   getCurrentWeather,
+  getCachedCurrentWeather,
+  clearWeatherCache,
 };

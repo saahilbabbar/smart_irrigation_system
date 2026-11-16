@@ -6,6 +6,7 @@ const cors = require("cors");
 const connectDB = require("./config/db");
 const authRoutes = require("./routes/authRoutes");
 const sensorRoutes = require("./routes/sensorRoutes");
+const settingsRoutes = require("./routes/settingsRoutes");
 
 dotenv.config();
 
@@ -24,6 +25,8 @@ app.use("/api/auth", authRoutes);
 
 app.use("/api/sensors", sensorRoutes);
 
+app.use("/api/settings", settingsRoutes);
+
 /*
   ROOT ROUTE
 */
@@ -38,6 +41,6 @@ app.get("/", (req, res) => {
 
 const PORT = 3001;
 
-app.listen(PORT, () => {
+app.listen(PORT, "0.0.0.0", () => {
   console.log(`Server running on port ${PORT}`);
 });

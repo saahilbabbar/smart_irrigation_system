@@ -7,9 +7,6 @@ import {
   Line,
   AreaChart,
   Area,
-  PieChart,
-  Pie,
-  Cell,
   BarChart,
   Bar,
   XAxis,
@@ -24,29 +21,40 @@ import { motion } from "framer-motion";
 import {
   FaTint,
   FaTemperatureHigh,
-  FaWater,
   FaPowerOff,
   FaSeedling,
 } from "react-icons/fa";
 
-const API_BASE_URL = "http://127.0.0.1:3001/api/sensors";
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:3001/api/sensors").replace(/\/$/, "");
+const SETTINGS_URL = API_BASE_URL.replace(/\/sensors$/, "/settings");
+
+// Keep the standard crop choices available while the API is starting or offline.
+const BUILT_IN_CROPS = [
+  { key: "sugarcane", name: "Sugarcane", minMoisture: 60, maxMoisture: 80, waterRequirement: 40, waterRequirementUnit: "mm/week" },
+  { key: "wheat", name: "Wheat", minMoisture: 40, maxMoisture: 60, waterRequirement: 20, waterRequirementUnit: "mm/week" },
+  { key: "rice", name: "Rice", minMoisture: 70, maxMoisture: 90, waterRequirement: 35, waterRequirementUnit: "mm/week" },
+  { key: "potato", name: "Potato", minMoisture: 60, maxMoisture: 80, waterRequirement: 30, waterRequirementUnit: "mm/week" },
+  { key: "onion", name: "Onion", minMoisture: 50, maxMoisture: 70, waterRequirement: 20, waterRequirementUnit: "mm/week" },
+];
 
 const formatHistoryPoint = (data) => ({
   id: data._id || data.createdAt,
   time: data.createdAt
     ? new Date(data.createdAt).toLocaleTimeString()
     : new Date().toLocaleTimeString(),
-  moisture: data.soilMoisture || 0,
-  temperature: data.temperature || 0,
-  humidity: data.humidity || 0,
-  tank: data.waterTankLevel || 0,
+  moisture: data.soilMoisture ?? null,
+  temperature: data.temperature ?? null,
+  humidity: data.humidity ?? null,
 });
 
 function App() {
   const [sensorData, setSensorData] = useState(null);
+  const [apiOnline, setApiOnline] = useState(null);
+  const [sensorFetchError, setSensorFetchError] = useState("");
+  const [clockNow, setClockNow] = useState(0);
 
   const [history, setHistory] = useState([]);
-  const [cropOptions, setCropOptions] = useState([]);
+  const [cropOptions, setCropOptions] = useState(BUILT_IN_CROPS);
   const [selectedCropKey, setSelectedCropKey] = useState("sugarcane");
   const [customCrop, setCustomCrop] = useState({
     name: "", minMoisture: "", maxMoisture: "", waterRequirement: "", waterRequirementUnit: "mm/week",
@@ -54,6 +62,10 @@ function App() {
   const [isSavingCustomCrop, setIsSavingCustomCrop] = useState(false);
   const [customCropSaveMessage, setCustomCropSaveMessage] = useState("");
   const [activeSection, setActiveSection] = useState("dashboard");
+  const [locationInfo, setLocationInfo] = useState(null);
+  const [locationMessage, setLocationMessage] = useState("");
+  const [isLocating, setIsLocating] = useState(false);
+  const [placeInput, setPlaceInput] = useState("");
   const dashboardRef = useRef(null);
   const analyticsRef = useRef(null);
   const irrigationRef = useRef(null);
@@ -63,11 +75,75 @@ function App() {
   const fetchCropRequirements = useCallback(async () => {
     try {
       const response = await axios.get(`${API_BASE_URL}/crops`);
-      setCropOptions(response.data || []);
+      // Keep the built-in catalog even if the server only returns saved custom crops.
+      const serverCrops = Array.isArray(response.data) ? response.data : [];
+      const builtInKeys = new Set(BUILT_IN_CROPS.map((crop) => crop.key));
+      setCropOptions([
+        ...BUILT_IN_CROPS,
+        ...serverCrops.filter((crop) => !builtInKeys.has(crop.key)),
+      ]);
     } catch (error) {
       console.log("Crop Requirements Fetch Error:", error);
     }
   }, []);
+
+  const fetchLocation = useCallback(async () => {
+    try {
+      const response = await axios.get(`${SETTINGS_URL}/location`);
+      setLocationInfo(response.data);
+    } catch (error) {
+      console.log("Location Fetch Error:", error);
+    }
+  }, []);
+
+  const saveLocation = async (body, successMessage) => {
+    try {
+      const response = await axios.put(`${SETTINGS_URL}/location`, body);
+      setLocationInfo(response.data);
+      setLocationMessage(successMessage);
+      return true;
+    } catch (error) {
+      setLocationMessage(error.response?.data?.error || "Could not save the location.");
+      return false;
+    }
+  };
+
+  // Uses the browser's geolocation (on macOS: Wi-Fi positioning of this laptop).
+  const useLaptopLocation = () => {
+    if (!window.isSecureContext || !navigator.geolocation) {
+      setLocationMessage("Location access needs the dashboard opened at http://localhost:5173 on this laptop.");
+      return;
+    }
+    setIsLocating(true);
+    setLocationMessage("");
+    navigator.geolocation.getCurrentPosition(
+      async ({ coords }) => {
+        await saveLocation(
+          { lat: coords.latitude, lon: coords.longitude },
+          "Laptop location saved. Weather for this place applies from the next sensor reading."
+        );
+        setIsLocating(false);
+      },
+      (error) => {
+        setIsLocating(false);
+        const reasons = {
+          1: "Permission denied. Allow location for this site in the browser, and enable your browser under System Settings → Privacy & Security → Location Services.",
+          2: "macOS could not provide a position. Turn on Wi-Fi and Location Services, and allow your browser under System Settings → Privacy & Security → Location Services. Or type your area below.",
+          3: "Timed out waiting for a position. Try again, or type your area below.",
+        };
+        setLocationMessage(`${reasons[error.code] || "Could not determine the laptop's location."} (${error.message || `code ${error.code}`})`);
+      },
+      { enableHighAccuracy: false, timeout: 20000, maximumAge: 10 * 60 * 1000 }
+    );
+  };
+
+  const savePlace = async () => {
+    if (!placeInput.trim()) return;
+    setIsLocating(true);
+    const saved = await saveLocation({ place: placeInput.trim() }, "Place saved. Weather for this place applies from the next sensor reading.");
+    if (saved) setPlaceInput("");
+    setIsLocating(false);
+  };
 
   // FETCH STORED HISTORY
   const fetchHistoryData = useCallback(async () => {
@@ -75,6 +151,7 @@ function App() {
       const response = await axios.get(
         `${API_BASE_URL}/history`
       );
+      setApiOnline(true);
 
       const storedHistory = response.data || [];
 
@@ -101,9 +178,16 @@ function App() {
         API_BASE_URL
       );
 
+      setApiOnline(true);
+      setSensorFetchError("");
+
       console.log("Sensor API Response:", response.data);
 
-      if (!response.data) return;
+      if (!response.data) {
+        setSensorData(null);
+        setSensorFetchError("The backend is online, but no sensor readings have been received yet.");
+        return;
+      }
 
       setSensorData(response.data);
 
@@ -122,26 +206,32 @@ function App() {
       });
     } catch (error) {
       console.log("Sensor Fetch Error:", error);
+      setApiOnline(false);
+      setSensorFetchError(error.response?.data?.error || "Could not reach the SmartFarm backend.");
     }
   }, []);
 
   // RUN ONCE + REFRESH DATA EVERY 5 SEC
   useEffect(() => {
     const initialFetch = setTimeout(() => {
+      setClockNow(Date.now());
       fetchHistoryData();
       fetchSensorData();
       fetchCropRequirements();
+      fetchLocation();
     }, 0);
 
     const interval = setInterval(() => {
+      setClockNow(Date.now());
       fetchSensorData();
+      fetchLocation();
     }, 5000);
 
     return () => {
       clearTimeout(initialFetch);
       clearInterval(interval);
     };
-  }, [fetchHistoryData, fetchSensorData, fetchCropRequirements]);
+  }, [fetchHistoryData, fetchSensorData, fetchCropRequirements, fetchLocation]);
 
   const customCropError = useMemo(() => {
     if (selectedCropKey !== "custom") return "";
@@ -171,10 +261,9 @@ function App() {
   const irrigationDecision = useMemo(() => {
     if (!sensorData || !selectedCrop) return null;
     const rainfall = sensorData.rainfall || 0;
-    const tankLevel = sensorData.waterTankLevel || 0;
-    const moisture = sensorData.soilMoisture || 0;
-    if (rainfall >= 1) return { status: "SUSPENDED", message: "Rain detected — irrigation suspended." };
-    if (tankLevel <= 20) return { status: "REFILL TANK", message: "Water tank is low. Refill before running irrigation." };
+    if (sensorData.soilSensorOk === false || sensorData.soilMoisture == null) return { status: "SOIL SENSOR OFFLINE", message: "Soil sensor unavailable. Irrigation recommendation paused." };
+    const moisture = sensorData.soilMoisture;
+    if (sensorData.rainfall != null && rainfall >= 1) return { status: "SUSPENDED", message: "Rain detected — irrigation suspended." };
     if (moisture < selectedCrop.minMoisture) return { status: "IRRIGATION REQUIRED", message: `Soil moisture is below the ${selectedCrop.name} target. Irrigation required.` };
     if (moisture <= selectedCrop.maxMoisture) return { status: "MOISTURE ADEQUATE", message: `Soil moisture is within the ${selectedCrop.name} target range.` };
     return { status: "NO IRRIGATION", message: `Soil moisture is above the ${selectedCrop.name} target range. No irrigation required.` };
@@ -209,10 +298,10 @@ function App() {
   // SYSTEM HEALTH
   const getHealthStatus = () => {
     if (!sensorData) return "Loading";
+    if (sensorData.soilSensorOk === false || sensorData.soilMoisture == null) return "Unknown";
 
     if (
-      sensorData.soilMoisture > 60 &&
-      sensorData.waterTankLevel > 40
+      sensorData.soilMoisture > 60
     ) {
       return "Excellent";
     }
@@ -224,24 +313,10 @@ function App() {
     return "Critical";
   };
 
-  // PIE CHART DATA
-  const pieData = sensorData
-    ? [
-        {
-          name: "Used",
-          value:
-            100 -
-            (sensorData.waterTankLevel || 0),
-        },
-        {
-          name: "Remaining",
-          value:
-            sensorData.waterTankLevel || 0,
-        },
-      ]
-    : [];
-
-  const COLORS = ["#f6bdc8", "#8ed6b3"];
+  const lastUpdatedDate = sensorData?.createdAt ? new Date(sensorData.createdAt) : null;
+  const dataAgeMs = lastUpdatedDate ? Math.max(0, clockNow - lastUpdatedDate.getTime()) : Infinity;
+  const dataIsStale = dataAgeMs > 15000;
+  const connectionLabel = apiOnline === false ? "Backend offline" : apiOnline === null ? "Connecting" : dataIsStale ? "Sensor data stale" : "Live sensor data";
 
   const sections = {
     dashboard: dashboardRef,
@@ -304,8 +379,16 @@ function App() {
           Smart Irrigation Monitoring System
         </motion.h1>
 
+        <div role="status" style={{ ...styles.connectionBanner, ...(apiOnline === false || dataIsStale ? styles.connectionWarning : {}) }}>
+          <span aria-hidden="true">●</span> {connectionLabel}
+          {lastUpdatedDate && <span> · Last reading: {lastUpdatedDate.toLocaleString()}</span>}
+        </div>
+
         {!sensorData ? (
-          <h2>Loading Sensor Data...</h2>
+          <div role="alert" style={styles.errorCard}>
+            <h2>{apiOnline === false ? "Backend connection unavailable" : "No sensor reading yet"}</h2>
+            <p>{sensorFetchError || "Waiting for the first ESP32 reading. Check that the backend is running and the device has posted data."}</p>
+          </div>
         ) : (
           <>
             {/* TOP CARDS */}
@@ -313,30 +396,30 @@ function App() {
             <div style={styles.cards}>
               <DashboardCard
                 title="Soil Moisture"
-                value={`${sensorData.soilMoisture || 0}%`}
+                value={sensorData.soilMoisture == null ? "Unavailable" : `${sensorData.soilMoisture}%`}
                 icon={<FaSeedling />}
                 color="#68be96"
               />
 
               <DashboardCard
+                title="Soil Condition"
+                value={sensorData.soilCondition || "Unavailable"}
+                icon={<FaSeedling />}
+                color="#71b991"
+              />
+
+              <DashboardCard
                 title="Temperature"
-                value={`${sensorData.temperature || 0}°C`}
+                value={sensorData.temperature == null ? "Unavailable" : `${sensorData.temperature}°C`}
                 icon={<FaTemperatureHigh />}
                 color="#eca06b"
               />
 
               <DashboardCard
                 title="Humidity"
-                value={`${sensorData.humidity || 0}%`}
+                value={sensorData.humidity == null ? "Unavailable" : `${sensorData.humidity}%`}
                 icon={<FaTint />}
                 color="#6abed3"
-              />
-
-              <DashboardCard
-                title="Water Tank"
-                value={`${sensorData.waterTankLevel || 0}%`}
-                icon={<FaWater />}
-                color="#8aaef0"
               />
 
               <DashboardCard
@@ -350,6 +433,10 @@ function App() {
                 }
               />
             </div>
+
+            <p style={styles.pumpPending}>
+              Physical pump automation: <strong>PENDING HARDWARE</strong>. Irrigation status below is a software recommendation only.
+            </p>
 
             <motion.div ref={irrigationRef} initial={{ opacity: 0 }} animate={{ opacity: 1 }} style={styles.cropCard}>
               <h2>🌾 Crop-aware Irrigation</h2>
@@ -380,7 +467,7 @@ function App() {
                   <div><h3>Selected Crop</h3><p>{selectedCrop.name}</p></div>
                   <div><h3>Indicative Water Need</h3><p>{selectedCrop.waterRequirement} {selectedCrop.waterRequirementUnit}</p></div>
                   <div><h3>Target Soil Moisture</h3><p>{selectedCrop.minMoisture}% – {selectedCrop.maxMoisture}%</p></div>
-                  <div><h3>Current Soil Moisture</h3><p>{sensorData.soilMoisture || 0}%</p></div>
+                  <div><h3>Current Soil Moisture</h3><p>{sensorData.soilMoisture == null ? "Unavailable" : `${sensorData.soilMoisture}%`}</p></div>
                   <div><h3>Recommendation</h3><p>{irrigationDecision?.message}</p></div>
                 </div>
               )}
@@ -404,17 +491,35 @@ function App() {
                   <h3>📍 Location</h3>
 
                   <p>
-                    {sensorData.location ||
-                      "Mumbai, India"}
+                    {locationInfo?.name || "Unavailable"}
                   </p>
+                  <p style={styles.locationSource}>
+                    {{ browser: "From this laptop's location", place: `Typed place: ${locationInfo?.place}`, ip: "Approximate (from internet connection)" }[locationInfo?.source] || ""}
+                  </p>
+                  <button type="button" onClick={useLaptopLocation} disabled={isLocating} style={styles.saveCropButton}>
+                    {isLocating ? "Locating..." : "Use my laptop's location"}
+                  </button>
+                  <div style={styles.placeRow}>
+                    <input
+                      placeholder="Or type your area, e.g. Vidyavihar, Mumbai"
+                      value={placeInput}
+                      onChange={(event) => setPlaceInput(event.target.value)}
+                      onKeyDown={(event) => { if (event.key === "Enter") savePlace(); }}
+                      style={styles.cropInput}
+                      aria-label="Area or city name"
+                    />
+                    <button type="button" onClick={savePlace} disabled={isLocating || !placeInput.trim()} style={styles.saveCropButton}>
+                      Set place
+                    </button>
+                  </div>
+                  {locationMessage && <p style={styles.locationSource}>{locationMessage}</p>}
                 </div>
 
                 <div>
                   <h3>☁ Weather</h3>
 
                   <p>
-                    {sensorData.weatherCondition ||
-                      "Clear Sky"}
+                    {sensorData.weatherCondition || "Unavailable"}
                   </p>
                 </div>
 
@@ -422,16 +527,25 @@ function App() {
                   <h3>🌧 Rainfall</h3>
 
                   <p>
-                    {sensorData.rainfall || 0} mm
+                    {sensorData.rainfall == null ? "Unavailable" : `${sensorData.rainfall} mm`}
                   </p>
+                </div>
+
+                <div>
+                  <h3>Soil Sensor</h3>
+                  <p>{sensorData.soilSensorOk == null ? "Status unknown" : sensorData.soilSensorOk ? "Online" : "Offline"}</p>
+                </div>
+
+                <div>
+                  <h3>DHT22 Sensor</h3>
+                  <p>{sensorData.dhtSensorOk == null ? "Status unknown" : sensorData.dhtSensorOk ? "Online" : "Offline"}</p>
                 </div>
 
                 <div>
                   <h3>💨 Wind Speed</h3>
 
                   <p>
-                    {sensorData.windSpeed || 0}{" "}
-                    kph
+                    {sensorData.windSpeed == null ? "Unavailable" : `${sensorData.windSpeed} kph`}
                   </p>
                 </div>
 
@@ -439,18 +553,16 @@ function App() {
                   <h3>🕒 Last Updated</h3>
 
                   <p>
-                    {sensorData.lastUpdated ||
-                      new Date().toLocaleTimeString()}
+                    {lastUpdatedDate ? lastUpdatedDate.toLocaleString() : "Not available"}
                   </p>
                 </div>
               </div>
 
               <div style={styles.aiBox}>
-                <h3>🤖 AI Recommendation</h3>
+                <h3>Recommendation</h3>
 
                 <p style={styles.recommendationText}>
-                  {irrigationDecision?.message || sensorData.recommendation ||
-                    "Soil moisture is stable. Irrigation system operating normally."}
+                  {irrigationDecision?.message || sensorData.recommendation || "Unavailable"}
                 </p>
               </div>
             </motion.div>
@@ -541,39 +653,6 @@ function App() {
                   </BarChart>
                 </ResponsiveContainer>
               </div>
-
-              {/* WATER TANK */}
-
-              <div style={styles.chartCard}>
-                <h2>Water Tank Usage</h2>
-
-                <ResponsiveContainer
-                  width="100%"
-                  height={300}
-                >
-                  <PieChart>
-                    <Pie
-                      data={pieData}
-                      cx="50%"
-                      cy="50%"
-                      outerRadius={100}
-                      dataKey="value"
-                      label
-                    >
-                      {pieData.map(
-                        (entry, index) => (
-                          <Cell
-                            key={index}
-                            fill={COLORS[index]}
-                          />
-                        )
-                      )}
-                    </Pie>
-
-                    <Tooltip />
-                  </PieChart>
-                </ResponsiveContainer>
-              </div>
             </div>
 
             {/* SYSTEM HEALTH */}
@@ -596,6 +675,8 @@ function App() {
                       : getHealthStatus() ===
                         "Moderate"
                       ? "#e3b85c"
+                      : getHealthStatus() === "Unknown"
+                      ? "#8a9a94"
                       : "#e99aab",
                 }}
               >
@@ -746,6 +827,35 @@ const styles = {
     margin: "0 0 36px",
   },
 
+  connectionBanner: {
+    margin: "-18px 0 24px",
+    padding: "12px 16px",
+    borderRadius: "12px",
+    background: "#e4f6ec",
+    color: "#286648",
+    fontSize: "14px",
+  },
+
+  connectionWarning: {
+    background: "#fff1d8",
+    color: "#805a18",
+  },
+
+  errorCard: {
+    padding: "24px",
+    borderRadius: "16px",
+    background: "#fff1d8",
+    color: "#684d21",
+  },
+
+  pumpPending: {
+    margin: "-8px 0 24px",
+    padding: "14px 18px",
+    borderRadius: "12px",
+    background: "#fff1d8",
+    color: "#684d21",
+  },
+
   cards: {
     display: "grid",
     gridTemplateColumns:
@@ -870,6 +980,19 @@ const styles = {
   saveMessage: {
     marginTop: "14px",
     color: "#2f8a67",
+  },
+
+  placeRow: {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: "8px",
+    marginTop: "10px",
+  },
+
+  locationSource: {
+    marginTop: "6px",
+    fontSize: "13px",
+    color: "#6c8b80",
   },
 
   recommendationText: {

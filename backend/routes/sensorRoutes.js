@@ -15,42 +15,72 @@ const {
 
 // Sensor ingestion (for ESP32 or another trusted device)
 router.post("/", async (req, res) => {
-
   const apiKey = req.get("x-device-api-key");
 
   if (!process.env.DEVICE_API_KEY || apiKey !== process.env.DEVICE_API_KEY) {
     return res.status(401).json({ error: "Unauthorized device" });
   }
 
-  const isInvalidNumber = (value) => (
-    typeof value !== "number" || !Number.isFinite(value)
+  const body = req.body || {};
+  const isFiniteNumber = (value) => (
+    typeof value === "number" && Number.isFinite(value)
   );
+  const isAbsent = (value) => value === undefined || value === null;
 
-  if (isInvalidNumber(req.body.soilMoisture)) {
+  if (typeof body.soilSensorOk !== "boolean" || typeof body.dhtSensorOk !== "boolean") {
     return res.status(400).json({
-      error: "soilMoisture must be a number",
+      error: "soilSensorOk and dhtSensorOk must be boolean values",
     });
   }
 
-  if (
-    req.body.waterTankLevel !== undefined &&
-    isInvalidNumber(req.body.waterTankLevel)
+  if (body.soilSensorOk) {
+    if (!isFiniteNumber(body.soilMoisture) || body.soilMoisture < 0 || body.soilMoisture > 100) {
+      return res.status(400).json({ error: "soilMoisture must be a number between 0 and 100 when soilSensorOk is true" });
+    }
+    if (!isFiniteNumber(body.soilRaw)) {
+      return res.status(400).json({ error: "soilRaw must be a finite number when soilSensorOk is true" });
+    }
+    if (!["DRY", "MOIST", "WET"].includes(body.soilCondition)) {
+      return res.status(400).json({ error: "soilCondition must be DRY, MOIST or WET when soilSensorOk is true" });
+    }
+  } else if (
+    (!isAbsent(body.soilMoisture) && !isFiniteNumber(body.soilMoisture)) ||
+    (!isAbsent(body.soilRaw) && !isFiniteNumber(body.soilRaw)) ||
+    (!isAbsent(body.soilCondition) && !["DRY", "MOIST", "WET"].includes(body.soilCondition))
   ) {
-    return res.status(400).json({
-      error: "waterTankLevel must be a number",
-    });
+    return res.status(400).json({ error: "Failed soil sensor readings must be null or valid values" });
+  }
+
+  if (body.dhtSensorOk) {
+    if (!isFiniteNumber(body.temperature)) {
+      return res.status(400).json({ error: "temperature must be a finite number when dhtSensorOk is true" });
+    }
+    if (!isFiniteNumber(body.humidity) || body.humidity < 0 || body.humidity > 100) {
+      return res.status(400).json({ error: "humidity must be a number between 0 and 100 when dhtSensorOk is true" });
+    }
+  } else if (
+    (!isAbsent(body.temperature) && !isFiniteNumber(body.temperature)) ||
+    (!isAbsent(body.humidity) && !isFiniteNumber(body.humidity))
+  ) {
+    return res.status(400).json({ error: "Failed DHT sensor readings must be null or finite numbers" });
   }
 
   try {
     const sensorData = await createSensorReadingFromHardware({
-      location: req.body.location,
-      soilMoisture: req.body.soilMoisture,
-      waterTankLevel: req.body.waterTankLevel,
-      cropKey: req.body.cropKey,
+      location: body.location,
+      soilRaw: body.soilSensorOk ? body.soilRaw : null,
+      soilMoisture: body.soilSensorOk ? body.soilMoisture : null,
+      soilCondition: body.soilSensorOk ? body.soilCondition : null,
+      soilSensorOk: body.soilSensorOk,
+      temperature: body.dhtSensorOk ? body.temperature : null,
+      humidity: body.dhtSensorOk ? body.humidity : null,
+      dhtSensorOk: body.dhtSensorOk,
+      cropKey: body.cropKey,
     });
 
     return res.status(201).json(sensorData);
   } catch (error) {
+    console.error("Sensor ingestion failed:", error.message);
     return res.status(500).json({ error: "Failed to store sensor data" });
   }
 
@@ -106,6 +136,10 @@ router.post("/crops/custom", async (req, res) => {
   }
 });
 
+// Only ESP32 readings carry boolean sensor-status flags; older weather-only/random
+// records do not, and must never be shown as measured values.
+const HARDWARE_READING = { soilSensorOk: { $type: "bool" } };
+
 // Latest Data
 
 router.get("/", async (req, res) => {
@@ -113,7 +147,7 @@ router.get("/", async (req, res) => {
   try {
 
     const latestData =
-      await SensorData.findOne()
+      await SensorData.findOne(HARDWARE_READING)
         .sort({ createdAt: -1 });
 
     res.json(latestData);
@@ -135,7 +169,7 @@ router.get("/history", async (req, res) => {
   try {
 
     const history =
-      await SensorData.find()
+      await SensorData.find(HARDWARE_READING)
         .sort({ createdAt: -1 })
         .limit(20);
 

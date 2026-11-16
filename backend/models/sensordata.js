@@ -3,27 +3,43 @@ const mongoose = require("mongoose");
 const SensorDataSchema = new mongoose.Schema({
   location: {
     type: String,
-    default: "Ratnagiri, Maharashtra",
+    default: null,
   },
 
   soilMoisture: {
     type: Number,
-    required: true,
+    default: null,
+  },
+
+  soilRaw: {
+    type: Number,
+    default: null,
+  },
+
+  soilCondition: {
+    type: String,
+    enum: ["DRY", "MOIST", "WET", null],
+    default: null,
+  },
+
+  soilSensorOk: {
+    type: Boolean,
+    default: null,
+  },
+
+  dhtSensorOk: {
+    type: Boolean,
+    default: null,
   },
 
   temperature: {
     type: Number,
-    required: true,
+    default: null,
   },
 
   humidity: {
     type: Number,
-    required: true,
-  },
-
-  waterTankLevel: {
-    type: Number,
-    required: true,
+    default: null,
   },
 
   cropKey: {
@@ -44,22 +60,22 @@ const SensorDataSchema = new mongoose.Schema({
 
   rainfall: {
     type: Number,
-    default: 0,
+    default: null,
   },
 
   cloud: {
     type: Number,
-    default: 0,
+    default: null,
   },
 
   windSpeed: {
     type: Number,
-    default: 0,
+    default: null,
   },
 
   weatherCondition: {
     type: String,
-    default: "Clear",
+    default: null,
   },
 
   recommendation: {

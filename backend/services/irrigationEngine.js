@@ -2,10 +2,15 @@
 // network, so it is unit-tested and the dashboard only displays its output.
 //
 // Inputs come from real measurements only: soil moisture from the soil sensor,
-// temperature from the DHT22, rainfall from WeatherAPI current conditions.
+// temperature from the DHT22, current rainfall and hourly forecast from WeatherAPI.
+//
+// Thresholds are indicative starting values; tune them from field observations.
 
-const RAIN_DELAY_MM = 1;      // current precipitation at/above this delays irrigation
-const HIGH_TEMP_C = 35;       // adds an evaporation note to the reasons
+const RAIN_DELAY_MM = 1;            // current precipitation at/above this delays irrigation
+const FORECAST_RAIN_MM = 2;         // forecast rain total in the window that justifies waiting
+const FORECAST_RAIN_CHANCE = 60;    // ...only if the max hourly chance of rain is at least this (%)
+const CRITICAL_DEFICIT_POINTS = 15; // this far below the crop minimum: irrigate even if rain is forecast
+const HIGH_TEMP_C = 35;             // adds an evaporation note to the reasons
 
 const STATUS = {
   PAUSED: "SOIL SENSOR OFFLINE",
@@ -15,7 +20,16 @@ const STATUS = {
   NOT_NEEDED: "NO IRRIGATION",
 };
 
-const decideIrrigation = ({ soilSensorOk, soilMoisture, temperature, rainfall, crop }) => {
+const decideIrrigation = ({
+  soilSensorOk,
+  soilMoisture,
+  temperature,
+  rainfall,
+  forecastRainMm,
+  forecastRainChance,
+  forecastWindowHours,
+  crop,
+}) => {
   const cropInfo = {
     key: crop.key,
     name: crop.name,
@@ -52,8 +66,9 @@ const decideIrrigation = ({ soilSensorOk, soilMoisture, temperature, rainfall, c
   }
 
   // Below minimum from here on.
+  const deficit = crop.minMoisture - soilMoisture;
   const reasons = [
-    `Soil moisture is ${soilMoisture}%, ${crop.minMoisture - soilMoisture} points below the ${crop.name} minimum of ${crop.minMoisture}%.`,
+    `Soil moisture is ${soilMoisture}%, ${deficit} points below the ${crop.name} minimum of ${crop.minMoisture}%.`,
   ];
 
   if (rainfall != null && rainfall >= RAIN_DELAY_MM) {
@@ -65,6 +80,22 @@ const decideIrrigation = ({ soilSensorOk, soilMoisture, temperature, rainfall, c
     reasons.push("Weather data unavailable; rainfall was not considered.");
   } else {
     reasons.push(`No significant rain right now (${rainfall} mm, WeatherAPI).`);
+  }
+
+  const forecastKnown = forecastRainMm != null && forecastRainChance != null;
+  const window = `${forecastWindowHours} h`;
+  const forecastText = `${forecastRainMm} mm within the next ${window}, ${forecastRainChance}% chance`;
+
+  if (!forecastKnown) {
+    reasons.push("Rain forecast unavailable; upcoming rain was not considered.");
+  } else if (forecastRainMm >= FORECAST_RAIN_MM && forecastRainChance >= FORECAST_RAIN_CHANCE) {
+    if (deficit <= CRITICAL_DEFICIT_POINTS) {
+      reasons.push(`Rain is forecast (${forecastText}, WeatherAPI), which should raise soil moisture without irrigating.`);
+      return result("DELAY", "Rain expected soon. Irrigation delayed to save water.", reasons);
+    }
+    reasons.push(`Rain is forecast (${forecastText}, WeatherAPI), but the soil is critically dry (more than ${CRITICAL_DEFICIT_POINTS} points below the minimum), so irrigating now.`);
+  } else {
+    reasons.push(`No significant rain forecast (${forecastText}, WeatherAPI).`);
   }
 
   if (temperature != null && temperature > HIGH_TEMP_C) {

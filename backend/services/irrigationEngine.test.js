@@ -66,3 +66,45 @@ test("decision records the crop it was made for", () => {
   const d = decideIrrigation({ ...base, soilMoisture: 26 });
   assert.deepEqual(d.crop, { key: "wheat", name: "Wheat", minMoisture: 40, maxMoisture: 60 });
 });
+
+// ---- Rain forecast ----
+const forecastRain = { forecastRainMm: 6, forecastRainChance: 80, forecastWindowHours: 6 };
+
+test("delay when rain is forecast and soil is only moderately dry", () => {
+  const d = decideIrrigation({ ...base, soilMoisture: 32, ...forecastRain });
+  assert.equal(d.action, "DELAY");
+  assert.equal(d.pumpRecommended, false);
+  assert.match(d.reasons.join(" "), /6 mm.*6 h.*80%/);
+});
+
+test("irrigate anyway when rain is forecast but soil is critically dry", () => {
+  const d = decideIrrigation({ ...base, soilMoisture: 20, ...forecastRain }); // 20 points below 40
+  assert.equal(d.action, "IRRIGATE");
+  assert.match(d.reasons.join(" "), /critically dry/);
+});
+
+test("small or unlikely forecast rain does not delay", () => {
+  assert.equal(decideIrrigation({ ...base, soilMoisture: 32, ...forecastRain, forecastRainMm: 1 }).action, "IRRIGATE");
+  assert.equal(decideIrrigation({ ...base, soilMoisture: 32, ...forecastRain, forecastRainChance: 40 }).action, "IRRIGATE");
+});
+
+test("forecast threshold boundaries (2 mm, 60%) delay", () => {
+  const d = decideIrrigation({ ...base, soilMoisture: 32, forecastRainMm: 2, forecastRainChance: 60, forecastWindowHours: 6 });
+  assert.equal(d.action, "DELAY");
+});
+
+test("forecast is ignored when soil moisture is adequate", () => {
+  assert.equal(decideIrrigation({ ...base, ...forecastRain }).action, "SUFFICIENT");
+});
+
+test("no rain forecast is stated as a reason", () => {
+  const d = decideIrrigation({ ...base, soilMoisture: 32, forecastRainMm: 0, forecastRainChance: 5, forecastWindowHours: 6 });
+  assert.equal(d.action, "IRRIGATE");
+  assert.match(d.reasons.join(" "), /No significant rain forecast/);
+});
+
+test("missing forecast is stated and does not block irrigation", () => {
+  const d = decideIrrigation({ ...base, soilMoisture: 32 });
+  assert.equal(d.action, "IRRIGATE");
+  assert.match(d.reasons.join(" "), /forecast unavailable/i);
+});

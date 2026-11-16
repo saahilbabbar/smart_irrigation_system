@@ -66,7 +66,7 @@ Priority: **P0** = do now · **P1** = next · **P2** = after that · **P3** = wh
 - **Frontend:** load and save the selection. **Backend:** the route + `getCropByKey(settings.activeCropKey)`. **DB:** a new `farmsettings` collection.
 - **Testing:** select wheat, reload, check the new reading has `cropKey: "wheat"`.
 
-### B3. Rain-forecast-aware delay: P1 · M
+### B3. Rain-forecast-aware delay: P1 · M · ✅ done (2026-11-16)
 - **What:** use WeatherAPI `forecast.json?days=1` (the same API key) and take the expected precipitation and rain probability for the next 6–12 h. Rule: when the moisture is below the minimum but not critical (for example, not more than 10 points under) and rain of at least X mm is expected with a probability of at least Y %, the action is `DELAY`, with the reason "Rain of ~N mm expected within H h".
 - **Why:** this is the single biggest water saving the project can show, and it is fully explainable.
 - **Backend:** extend the weather cache (forecasts can be cached for 30–60 min). **DB:** store `forecastRainMm`, `forecastRainChance` on each reading. **Frontend:** a forecast line in the environment panel.

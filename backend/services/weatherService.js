@@ -6,6 +6,8 @@ const { getCropByKey } = require("../config/crops");
 const { decideIrrigation } = require("./irrigationEngine");
 
 const WEATHER_CACHE_TTL_MS = 5 * 60 * 1000;
+const FORECAST_WINDOW_HOURS = 6;
+const HOUR_S = 3600;
 let cachedWeather = null;
 let cachedWeatherAt = 0;
 let lastWeatherAttemptAt = 0;
@@ -19,18 +21,44 @@ const getWeatherQuery = async () => {
   return "auto:ip";
 };
 
+// Total forecast rain and highest hourly chance of rain for hourly slots that
+// overlap (now, now + windowHours]. Pure, so it is unit-tested.
+const summariseForecast = (forecastDays, nowEpoch, windowHours) => {
+  const end = nowEpoch + windowHours * HOUR_S;
+  const slots = (forecastDays || [])
+    .flatMap((day) => day.hour || [])
+    .filter((h) => h.time_epoch + HOUR_S > nowEpoch && h.time_epoch < end);
+
+  if (slots.length === 0) {
+    return { forecastRainMm: null, forecastRainChance: null, forecastWindowHours: windowHours };
+  }
+  return {
+    forecastRainMm: Math.round(slots.reduce((sum, h) => sum + (h.precip_mm || 0), 0) * 10) / 10,
+    forecastRainChance: Math.max(...slots.map((h) => h.chance_of_rain || 0)),
+    forecastWindowHours: windowHours,
+  };
+};
+
+// One forecast.json call returns current conditions and the hourly forecast.
 const getCurrentWeather = async (query) => {
   const weatherResponse = await axios.get(
-    "https://api.weatherapi.com/v1/current.json",
+    "https://api.weatherapi.com/v1/forecast.json",
     {
-      params: { key: process.env.WEATHER_API_KEY, q: query ?? await getWeatherQuery() },
+      params: {
+        key: process.env.WEATHER_API_KEY,
+        q: query ?? await getWeatherQuery(),
+        days: 2, // covers a 6 h window that crosses midnight
+        aqi: "no",
+        alerts: "no",
+      },
       timeout: 4000,
     }
   );
 
-  const { current: weather, location: place } = weatherResponse.data;
+  const { current: weather, location: place, forecast } = weatherResponse.data;
 
   return {
+    ...summariseForecast(forecast?.forecastday, Math.floor(Date.now() / 1000), FORECAST_WINDOW_HOURS),
     location: [place?.name, place?.region].filter(Boolean).join(", ") || null,
     temperature: weather.temp_c,
     humidity: weather.humidity,
@@ -86,6 +114,9 @@ const createSensorReadingFromHardware = async ({
     soilMoisture,
     temperature: sensorTemperature,
     rainfall: weatherData.rainfall,
+    forecastRainMm: weatherData.forecastRainMm,
+    forecastRainChance: weatherData.forecastRainChance,
+    forecastWindowHours: weatherData.forecastWindowHours,
     crop,
   });
 
@@ -113,4 +144,5 @@ module.exports = {
   getCurrentWeather,
   getCachedCurrentWeather,
   clearWeatherCache,
+  summariseForecast,
 };

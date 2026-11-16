@@ -164,6 +164,9 @@ router.get("/", async (req, res) => {
       soilMoisture: latestData.soilMoisture,
       temperature: latestData.dhtSensorOk ? latestData.temperature : null,
       rainfall: latestData.rainfall,
+      forecastRainMm: latestData.forecastRainMm,
+      forecastRainChance: latestData.forecastRainChance,
+      forecastWindowHours: latestData.forecastWindowHours,
       crop,
     });
 

@@ -73,6 +73,22 @@ const SensorDataSchema = new mongoose.Schema({
     default: null,
   },
 
+  // WeatherAPI hourly forecast summary for the next forecastWindowHours.
+  forecastRainMm: {
+    type: Number,
+    default: null,
+  },
+
+  forecastRainChance: {
+    type: Number,
+    default: null,
+  },
+
+  forecastWindowHours: {
+    type: Number,
+    default: null,
+  },
+
   weatherCondition: {
     type: String,
     default: null,

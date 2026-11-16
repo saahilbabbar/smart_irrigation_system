@@ -42,7 +42,7 @@ Farmers often irrigate on a fixed schedule or by feel. This wastes water when th
 | | bcryptjs, jsonwebtoken | Used by the auth routes only |
 | | socket.io | **Installed but unused** |
 | Database | MongoDB (any URI given in `MONGO_URI`) | Collections: `sensordatas`, `customcrops`, `users` |
-| External API | WeatherAPI.com `current.json` | Current conditions only, with no forecast |
+| External API | WeatherAPI.com `forecast.json` (days=2) | Current conditions plus the hourly forecast in one call, cached for 5 minutes |
 | Hardware | ESP32, capacitive/resistive soil-moisture probe (GPIO 34, 12-bit ADC), DHT22 (GPIO 23) | The firmware is **not in this repository** and is maintained separately by Vraj |
 
 Environment variables (`backend/.env`, git-ignored): `MONGO_URI`, `JWT_SECRET`, `PORT` (currently ignored, see §13), `WEATHER_API_KEY`, `DEVICE_API_KEY`. Frontend: `VITE_API_BASE_URL` (optional, default `http://127.0.0.1:3001/api/sensors`).
@@ -205,6 +205,7 @@ Inputs, all from real sources:
 - soil moisture and `soilSensorOk` from the soil sensor
 - air temperature from the DHT22
 - current rainfall from WeatherAPI
+- the WeatherAPI hourly forecast, summarised as total rain (mm) and the highest hourly chance of rain over the **next 6 hours** (`forecastRainMm`, `forecastRainChance`, `forecastWindowHours`, stored on each reading)
 - the **active crop** saved by the dashboard in `FarmSettings.activeCropKey`. A `cropKey` sent by the device takes priority; if neither is set, the crop is sugarcane.
 
 | Condition (in order) | Action | Status shown | Pump recommended |
@@ -213,13 +214,17 @@ Inputs, all from real sources:
 | Moisture above the crop's maximum | `NOT_NEEDED` | NO IRRIGATION | no |
 | Moisture within [min, max] | `SUFFICIENT` | MOISTURE ADEQUATE | no |
 | Below the minimum and raining now (≥ 1 mm) | `DELAY` | IRRIGATION DELAYED | no |
-| Below the minimum, no rain | `IRRIGATE` | IRRIGATION REQUIRED | **yes** |
+| Below the minimum by no more than 15 points, and ≥ 2 mm forecast in 6 h with a chance of 60 % or more | `DELAY` | IRRIGATION DELAYED | no |
+| Below the minimum by more than 15 points ("critically dry"), even if rain is forecast | `IRRIGATE` | IRRIGATION REQUIRED | **yes** |
+| Below the minimum, no significant rain now or forecast | `IRRIGATE` | IRRIGATION REQUIRED | **yes** |
+
+The thresholds (1 mm, 2 mm, 60 %, 15 points, 6 h) are named constants in `irrigationEngine.js` and `weatherService.js`. They are indicative starting values to tune from field observations.
 
 Each decision includes `reasons[]` in plain language, for example "Soil moisture is 26%, 14 points below the Wheat minimum of 40%." or "No significant rain right now (0 mm, WeatherAPI)." Notes are added when the weather is unknown and when the DHT22 reads above 35 °C. These notes change the explanation, not the action. The dashboard shows the reasons under "Why?".
 
 - Stored on every reading: `decision` (the crop in effect at that time). `recommendation` and `pumpStatus` are kept for compatibility. `pumpStatus` is a **recommendation**, not the real pump state.
 - `GET /api/sensors` also returns `currentDecision`: the latest reading re-evaluated for the crop selected **now**, so changing the crop takes effect immediately.
-- Not yet considered: rain forecast, humidity, wind, moisture trend.
+- Not yet considered: humidity, wind, moisture trend.
 
 ## 12. Current implementation status
 
@@ -235,7 +240,7 @@ Each decision includes `reasons[]` in plain language, for example "Soil moisture
 | History charts | 🟡 only the latest 20 points, no date range |
 | Crop catalog + custom crops in MongoDB | ✅ |
 | Crop-aware recommendation | ✅ a single backend engine with reasons; the active crop is saved in `FarmSettings` |
-| WeatherAPI integration | 🟡 current conditions only; weather temperature/humidity discarded; location comes from the laptop's browser location (`PUT /api/settings/location`) or the IP lookup (`auto:ip`) |
+| WeatherAPI integration | 🟡 current conditions plus a 6-hour rain forecast; weather temperature/humidity discarded; location comes from the laptop's browser location (`PUT /api/settings/location`) or the IP lookup (`auto:ip`) |
 | User registration/login | 🟡 works in isolation; no middleware, no frontend, no route protection |
 | Pump control | 🔧 not implemented (correct for now); the `pumpStatus` field name is misleading |
 | Additional sensors, analytics, crop management, prediction | ⏳ |

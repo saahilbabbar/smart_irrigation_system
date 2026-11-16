@@ -550,6 +550,15 @@ function App() {
                 </div>
 
                 <div>
+                  <h3>🌦 Rain forecast</h3>
+                  <p>
+                    {sensorData.forecastRainMm == null
+                      ? "Unavailable"
+                      : `${sensorData.forecastRainMm} mm in next ${sensorData.forecastWindowHours} h · ${sensorData.forecastRainChance}% chance`}
+                  </p>
+                </div>
+
+                <div>
                   <h3>Soil Sensor</h3>
                   <p>{sensorData.soilSensorOk == null ? "Status unknown" : sensorData.soilSensorOk ? "Online" : "Offline"}</p>
                 </div>

@@ -161,6 +161,8 @@ Base URL: `http://<host>:3001`
 | GET | `/api/settings/location` | — | The current weather location `{source: "browser"\|"ip", lat, lon, name}` |
 | PUT | `/api/settings/location` | — ⚠ | Save `{lat, lon}` (from the dashboard's "Use my laptop's location" button) |
 | DELETE | `/api/settings/location` | — ⚠ | Go back to the IP lookup |
+| GET | `/api/settings/crop` | — | The active crop |
+| PUT | `/api/settings/crop` | — ⚠ | Set the active crop `{cropKey}` (built-in or saved custom) |
 | POST | `/api/auth/register` | — | Create a user (the response includes the password hash ⚠) |
 | POST | `/api/auth/login` | — | Returns a JWT (not used anywhere yet) |
 
@@ -197,23 +199,27 @@ Validation rules (`sensorRoutes.js:17-95`):
 
 ## 11. Irrigation recommendation logic (as implemented)
 
-The same rules exist **in two places**, and they differ slightly.
+There is **one decision engine**, `backend/services/irrigationEngine.js` (`decideIrrigation`). It is a pure function with unit tests in `irrigationEngine.test.js` (run them with `npm test` in `backend/`). The dashboard only *displays* its output; it doesn't recalculate anything.
 
-**Backend** (`weatherService.js` `buildRecommendation`, stored in Mongo; uses the device crop, which is in practice sugarcane):
-1. Soil moisture is null → "Soil sensor unavailable. Irrigation recommendation paused."
-2. Current rainfall ≥ 1 mm → "Rain detected. Irrigation temporarily suspended."
-3. Moisture below the crop minimum → "Irrigation required."
-4. Moisture within [min, max] → "adequate"
-5. Moisture above the max and temperature over 35 °C → "High temperature detected…" *(this branch is badly placed: it is only reached when the soil is already too wet)*
-6. Otherwise → "above target range. No irrigation required."
+Inputs, all from real sources:
+- soil moisture and `soilSensorOk` from the soil sensor
+- air temperature from the DHT22
+- current rainfall from WeatherAPI
+- the **active crop** saved by the dashboard in `FarmSettings.activeCropKey`. A `cropKey` sent by the device takes priority; if neither is set, the crop is sugarcane.
 
-`pumpStatus = ON` when the soil sensor is OK, moisture is below the minimum, and rainfall is under 1 mm (or unknown).
+| Condition (in order) | Action | Status shown | Pump recommended |
+|---|---|---|---|
+| Soil sensor offline or no moisture value | `PAUSED` | SOIL SENSOR OFFLINE | no |
+| Moisture above the crop's maximum | `NOT_NEEDED` | NO IRRIGATION | no |
+| Moisture within [min, max] | `SUFFICIENT` | MOISTURE ADEQUATE | no |
+| Below the minimum and raining now (≥ 1 mm) | `DELAY` | IRRIGATION DELAYED | no |
+| Below the minimum, no rain | `IRRIGATE` | IRRIGATION REQUIRED | **yes** |
 
-**Frontend** (`App.jsx` `irrigationDecision`; uses the crop selected in the UI): steps 1–4 and 6 as above, with no temperature branch. Each step returns a status label (`SOIL SENSOR OFFLINE`, `SUSPENDED`, `IRRIGATION REQUIRED`, `MOISTURE ADEQUATE`, `NO IRRIGATION`).
+Each decision includes `reasons[]` in plain language, for example "Soil moisture is 26%, 14 points below the Wheat minimum of 40%." or "No significant rain right now (0 mm, WeatherAPI)." Notes are added when the weather is unknown and when the DHT22 reads above 35 °C. These notes change the explanation, not the action. The dashboard shows the reasons under "Why?".
 
-The result is that if the user picks "Wheat", the dashboard shows the wheat decision, while the stored `recommendation`/`pumpStatus` in MongoDB is still worked out for sugarcane.
-
-The weather input is **current precipitation only** (`precip_mm` from `current.json`). There is no forecast and no use of history, humidity or wind in the decision.
+- Stored on every reading: `decision` (the crop in effect at that time). `recommendation` and `pumpStatus` are kept for compatibility. `pumpStatus` is a **recommendation**, not the real pump state.
+- `GET /api/sensors` also returns `currentDecision`: the latest reading re-evaluated for the crop selected **now**, so changing the crop takes effect immediately.
+- Not yet considered: rain forecast, humidity, wind, moisture trend.
 
 ## 12. Current implementation status
 
@@ -228,7 +234,7 @@ The weather input is **current precipitation only** (`precip_mm` from `current.j
 | Live dashboard polling every 5 s | ✅ |
 | History charts | 🟡 only the latest 20 points, no date range |
 | Crop catalog + custom crops in MongoDB | ✅ |
-| Crop-aware recommendation | 🟡 split between the frontend and backend, and the selected crop is not saved |
+| Crop-aware recommendation | ✅ a single backend engine with reasons; the active crop is saved in `FarmSettings` |
 | WeatherAPI integration | 🟡 current conditions only; weather temperature/humidity discarded; location comes from the laptop's browser location (`PUT /api/settings/location`) or the IP lookup (`auto:ip`) |
 | User registration/login | 🟡 works in isolation; no middleware, no frontend, no route protection |
 | Pump control | 🔧 not implemented (correct for now); the `pumpStatus` field name is misleading |

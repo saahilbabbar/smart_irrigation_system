@@ -53,14 +53,14 @@ Priority: **P0** = do now · **P1** = next · **P2** = after that · **P3** = wh
 
 ## B. Short-term improvements (Phase 2: explainable irrigation logic, Phase 6a: basic analytics)
 
-### B1. One irrigation decision engine on the backend: P1 · M
+### B1. One irrigation decision engine on the backend: P1 · M · ✅ done (2026-11-16)
 - **What:** move the logic into `backend/services/irrigationEngine.js`, a pure function `decide({reading, crop, weather, forecast}) → {status, action, reasons[], inputs}`. The `action` is one of `IRRIGATE`, `DELAY`, `SUFFICIENT`, `PAUSED`. Store it on each reading. The frontend stops recomputing and only *displays* the stored decision and its reasons.
 - **Why:** the frontend and backend copies have already drifted (the temperature branch), and the stored recommendation doesn't match what the user sees. A single pure function is also easy to unit-test and explain.
 - **Frontend:** remove the `irrigationDecision` useMemo and render `reading.decision.reasons` as a "Why?" list.
 - **Backend:** the new module; `weatherService.js` calls it. **DB:** a `decision` sub-document on `SensorData`.
 - **Testing:** a table of test cases (moisture × crop × rain → expected action and reasons).
 
-### B2. Saved active crop: P1 · S
+### B2. Saved active crop: P1 · S · ✅ done (2026-11-16)
 - **What:** a single `FarmSettings` document (`activeCropKey`, later location) with `GET/PUT /api/settings`. Ingestion uses it when the device doesn't send a `cropKey`. The drop-down writes to it.
 - **Why:** today the crop resets to sugarcane on reload, and stored recommendations always use sugarcane.
 - **Frontend:** load and save the selection. **Backend:** the route + `getCropByKey(settings.activeCropKey)`. **DB:** a new `farmsettings` collection.

@@ -87,6 +87,15 @@ function App() {
     }
   }, []);
 
+  const fetchActiveCrop = useCallback(async () => {
+    try {
+      const response = await axios.get(`${SETTINGS_URL}/crop`);
+      if (response.data?.key) setSelectedCropKey(response.data.key);
+    } catch (error) {
+      console.log("Active Crop Fetch Error:", error);
+    }
+  }, []);
+
   const fetchLocation = useCallback(async () => {
     try {
       const response = await axios.get(`${SETTINGS_URL}/location`);
@@ -218,6 +227,7 @@ function App() {
       fetchHistoryData();
       fetchSensorData();
       fetchCropRequirements();
+      fetchActiveCrop();
       fetchLocation();
     }, 0);
 
@@ -231,7 +241,7 @@ function App() {
       clearTimeout(initialFetch);
       clearInterval(interval);
     };
-  }, [fetchHistoryData, fetchSensorData, fetchCropRequirements, fetchLocation]);
+  }, [fetchHistoryData, fetchSensorData, fetchCropRequirements, fetchActiveCrop, fetchLocation]);
 
   const customCropError = useMemo(() => {
     if (selectedCropKey !== "custom") return "";
@@ -258,16 +268,24 @@ function App() {
     return cropOptions.find((crop) => crop.key === selectedCropKey) || null;
   }, [cropOptions, customCrop, customCropError, selectedCropKey]);
 
-  const irrigationDecision = useMemo(() => {
-    if (!sensorData || !selectedCrop) return null;
-    const rainfall = sensorData.rainfall || 0;
-    if (sensorData.soilSensorOk === false || sensorData.soilMoisture == null) return { status: "SOIL SENSOR OFFLINE", message: "Soil sensor unavailable. Irrigation recommendation paused." };
-    const moisture = sensorData.soilMoisture;
-    if (sensorData.rainfall != null && rainfall >= 1) return { status: "SUSPENDED", message: "Rain detected — irrigation suspended." };
-    if (moisture < selectedCrop.minMoisture) return { status: "IRRIGATION REQUIRED", message: `Soil moisture is below the ${selectedCrop.name} target. Irrigation required.` };
-    if (moisture <= selectedCrop.maxMoisture) return { status: "MOISTURE ADEQUATE", message: `Soil moisture is within the ${selectedCrop.name} target range.` };
-    return { status: "NO IRRIGATION", message: `Soil moisture is above the ${selectedCrop.name} target range. No irrigation required.` };
-  }, [sensorData, selectedCrop]);
+  // The backend's irrigation engine is the single source of truth; the dashboard
+  // only displays its decision for the active crop.
+  const irrigationDecision = selectedCropKey === "custom"
+    ? { status: "SAVE CROP", message: "Save the custom crop to get a recommendation for it.", reasons: [] }
+    : sensorData?.currentDecision || null;
+
+  const changeActiveCrop = async (cropKey) => {
+    const previousKey = selectedCropKey;
+    setSelectedCropKey(cropKey);
+    if (cropKey === "custom") return;
+    try {
+      await axios.put(`${SETTINGS_URL}/crop`, { cropKey });
+      fetchSensorData();
+    } catch (error) {
+      setSelectedCropKey(previousKey);
+      setCustomCropSaveMessage(error.response?.data?.error || "Could not save the selected crop.");
+    }
+  };
 
   const saveCustomCrop = async () => {
     if (customCropError) return;
@@ -286,7 +304,7 @@ function App() {
 
       const savedCrop = response.data;
       setCropOptions((currentCrops) => [...currentCrops, savedCrop]);
-      setSelectedCropKey(savedCrop.key);
+      await changeActiveCrop(savedCrop.key);
       setCustomCropSaveMessage(`${savedCrop.name} saved to MongoDB.`);
     } catch (error) {
       setCustomCropSaveMessage(error.response?.data?.error || "Could not save the custom crop.");
@@ -441,7 +459,7 @@ function App() {
             <motion.div ref={irrigationRef} initial={{ opacity: 0 }} animate={{ opacity: 1 }} style={styles.cropCard}>
               <h2>🌾 Crop-aware Irrigation</h2>
               <label style={styles.cropLabel} htmlFor="crop-select">Crop being monitored</label>
-              <select id="crop-select" value={selectedCropKey} onChange={(event) => { setSelectedCropKey(event.target.value); setCustomCropSaveMessage(""); }} style={styles.cropSelect}>
+              <select id="crop-select" value={selectedCropKey} onChange={(event) => { setCustomCropSaveMessage(""); changeActiveCrop(event.target.value); }} style={styles.cropSelect}>
                 {cropOptions.map((crop) => <option key={crop.key} value={crop.key}>{crop.name}</option>)}
                 <option value="custom">Custom Crop</option>
               </select>
@@ -562,8 +580,16 @@ function App() {
                 <h3>Recommendation</h3>
 
                 <p style={styles.recommendationText}>
-                  {irrigationDecision?.message || sensorData.recommendation || "Unavailable"}
+                  {irrigationDecision?.message || "Unavailable"}
                 </p>
+                {irrigationDecision?.reasons?.length > 0 && (
+                  <>
+                    <h4 style={styles.whyHeading}>Why?</h4>
+                    <ul style={styles.reasonList}>
+                      {irrigationDecision.reasons.map((reason) => <li key={reason}>{reason}</li>)}
+                    </ul>
+                  </>
+                )}
               </div>
             </motion.div>
 
@@ -987,6 +1013,18 @@ const styles = {
     flexWrap: "wrap",
     gap: "8px",
     marginTop: "10px",
+  },
+
+  whyHeading: {
+    margin: "14px 0 6px",
+    color: "#285742",
+  },
+
+  reasonList: {
+    margin: 0,
+    paddingLeft: "20px",
+    lineHeight: 1.7,
+    color: "#3d6555",
   },
 
   locationSource: {

@@ -6,8 +6,10 @@ const router = express.Router();
 const SensorData = require(
   "../models/sensordata"
 );
-const { crops } = require("../config/crops");
+const { crops, getCropByKey } = require("../config/crops");
 const CustomCrop = require("../models/CustomCrop");
+const FarmSettings = require("../models/FarmSettings");
+const { decideIrrigation } = require("../services/irrigationEngine");
 
 const {
   createSensorReadingFromHardware,
@@ -148,9 +150,24 @@ router.get("/", async (req, res) => {
 
     const latestData =
       await SensorData.findOne(HARDWARE_READING)
-        .sort({ createdAt: -1 });
+        .sort({ createdAt: -1 })
+        .lean();
 
-    res.json(latestData);
+    if (!latestData) return res.json(null);
+
+    // Re-evaluate the latest reading for the crop selected now, so a crop change
+    // shows immediately. The stored `decision` keeps what was decided at the time.
+    const settings = await FarmSettings.getSettings();
+    const crop = await getCropByKey(settings?.activeCropKey);
+    const currentDecision = decideIrrigation({
+      soilSensorOk: latestData.soilSensorOk,
+      soilMoisture: latestData.soilMoisture,
+      temperature: latestData.dhtSensorOk ? latestData.temperature : null,
+      rainfall: latestData.rainfall,
+      crop,
+    });
+
+    res.json({ ...latestData, currentDecision });
 
   } catch (error) {
 

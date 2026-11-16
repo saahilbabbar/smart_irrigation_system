@@ -78,6 +78,24 @@ const SensorDataSchema = new mongoose.Schema({
     default: null,
   },
 
+  // Output of services/irrigationEngine at ingestion time (the crop in effect then).
+  decision: {
+    type: new mongoose.Schema({
+      action: String,
+      status: String,
+      message: String,
+      reasons: [String],
+      pumpRecommended: Boolean,
+      crop: {
+        key: String,
+        name: String,
+        minMoisture: Number,
+        maxMoisture: Number,
+      },
+    }, { _id: false }),
+    default: null,
+  },
+
   recommendation: {
     type: String,
     default: "",

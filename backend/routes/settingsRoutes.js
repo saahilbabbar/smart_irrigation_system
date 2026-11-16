@@ -1,6 +1,8 @@
 const express = require("express");
 
-const FarmLocation = require("../models/FarmLocation");
+const FarmSettings = require("../models/FarmSettings");
+const CustomCrop = require("../models/CustomCrop");
+const { crops, getCropByKey } = require("../config/crops");
 const {
   getCurrentWeather,
   getCachedCurrentWeather,
@@ -9,8 +11,18 @@ const {
 
 const router = express.Router();
 
+const saveSettings = (update) => FarmSettings.findOneAndUpdate(
+  { key: "default" },
+  update,
+  { upsert: true, runValidators: true }
+);
+
+/*
+  LOCATION (used for weather lookups and stored on new sensor readings)
+*/
+
 const describeLocation = async () => {
-  const saved = await FarmLocation.findOne({ key: "default" }).lean();
+  const saved = await FarmSettings.getSettings();
   const weather = await getCachedCurrentWeather();
   let source = "ip";
   if (saved?.place) source = "place";
@@ -24,7 +36,6 @@ const describeLocation = async () => {
   };
 };
 
-// Location used for weather lookups and stored on new sensor readings.
 router.get("/location", async (req, res) => {
   try {
     return res.json(await describeLocation());
@@ -62,11 +73,7 @@ router.put("/location", async (req, res) => {
   }
 
   try {
-    await FarmLocation.findOneAndUpdate(
-      { key: "default" },
-      update,
-      { upsert: true, runValidators: true }
-    );
+    await saveSettings(update);
     clearWeatherCache();
     return res.json(await describeLocation());
   } catch (error) {
@@ -74,14 +81,45 @@ router.put("/location", async (req, res) => {
   }
 });
 
-// Revert to WeatherAPI's IP-based lookup.
+// Revert to WeatherAPI's IP-based lookup (keeps other settings such as the crop).
 router.delete("/location", async (req, res) => {
   try {
-    await FarmLocation.deleteOne({ key: "default" });
+    await saveSettings({ lat: null, lon: null, place: null });
     clearWeatherCache();
     return res.json(await describeLocation());
   } catch (error) {
     return res.status(500).json({ error: "Failed to reset location" });
+  }
+});
+
+/*
+  ACTIVE CROP (used for every irrigation decision)
+*/
+
+router.get("/crop", async (req, res) => {
+  try {
+    const settings = await FarmSettings.getSettings();
+    return res.json(await getCropByKey(settings?.activeCropKey));
+  } catch (error) {
+    return res.status(500).json({ error: "Failed to fetch active crop" });
+  }
+});
+
+router.put("/crop", async (req, res) => {
+  const { cropKey } = req.body || {};
+  if (typeof cropKey !== "string" || !cropKey.trim()) {
+    return res.status(400).json({ error: "cropKey is required" });
+  }
+
+  try {
+    const exists = crops[cropKey] || await CustomCrop.exists({ key: cropKey });
+    if (!exists) {
+      return res.status(400).json({ error: "Unknown crop" });
+    }
+    await saveSettings({ activeCropKey: cropKey });
+    return res.json(await getCropByKey(cropKey));
+  } catch (error) {
+    return res.status(500).json({ error: "Failed to save active crop" });
   }
 });
 

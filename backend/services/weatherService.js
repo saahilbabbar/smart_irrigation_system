@@ -1,8 +1,9 @@
 const axios = require("axios");
 
 const SensorData = require("../models/sensordata");
-const FarmLocation = require("../models/FarmLocation");
+const FarmSettings = require("../models/FarmSettings");
 const { getCropByKey } = require("../config/crops");
+const { decideIrrigation } = require("./irrigationEngine");
 
 const WEATHER_CACHE_TTL_MS = 5 * 60 * 1000;
 let cachedWeather = null;
@@ -12,7 +13,7 @@ let lastWeatherAttemptAt = 0;
 // Saved dashboard coordinates if set, otherwise WeatherAPI's IP lookup of the
 // backend laptop's public IP (city-level accuracy).
 const getWeatherQuery = async () => {
-  const saved = await FarmLocation.findOne({ key: "default" }).lean();
+  const saved = await FarmSettings.getSettings();
   if (saved?.place) return saved.place;
   if (saved?.lat != null && saved?.lon != null) return `${saved.lat},${saved.lon}`;
   return "auto:ip";
@@ -63,35 +64,6 @@ const clearWeatherCache = () => {
   lastWeatherAttemptAt = 0;
 };
 
-const buildRecommendation = ({
-  soilMoisture,
-  temperature,
-  rainfall,
-  crop,
-}) => {
-  if (soilMoisture === null || soilMoisture === undefined) {
-    return "Soil sensor unavailable. Irrigation recommendation paused.";
-  }
-
-  if (rainfall !== null && rainfall !== undefined && rainfall >= 1) {
-    return "Rain detected. Irrigation temporarily suspended.";
-  }
-
-  if (soilMoisture < crop.minMoisture) {
-    return `Soil moisture is below the ${crop.name} target. Irrigation required.`;
-  }
-
-  if (soilMoisture <= crop.maxMoisture) {
-    return `Soil moisture is adequate for ${crop.name}.`;
-  }
-
-  if (temperature > 35) {
-    return "High temperature detected. Monitor moisture and irrigation frequency.";
-  }
-
-  return `Soil moisture is above the ${crop.name} target range. No irrigation required.`;
-};
-
 const createSensorReadingFromHardware = async ({
   soilRaw,
   soilMoisture,
@@ -104,14 +76,18 @@ const createSensorReadingFromHardware = async ({
   cropKey,
 }) => {
   const weatherData = await getCachedCurrentWeather() || {};
-  const crop = await getCropByKey(cropKey);
+  // A cropKey sent by the device wins; otherwise the crop selected on the dashboard.
+  const settings = await FarmSettings.getSettings();
+  const crop = await getCropByKey(cropKey || settings?.activeCropKey);
+  const sensorTemperature = dhtSensorOk ? temperature : null;
 
-  const pumpStatus =
-    soilSensorOk &&
-    soilMoisture < crop.minMoisture &&
-    (weatherData.rainfall == null || weatherData.rainfall < 1)
-      ? "ON"
-      : "OFF";
+  const decision = decideIrrigation({
+    soilSensorOk,
+    soilMoisture,
+    temperature: sensorTemperature,
+    rainfall: weatherData.rainfall,
+    crop,
+  });
 
   return SensorData.create({
     ...weatherData,
@@ -120,18 +96,15 @@ const createSensorReadingFromHardware = async ({
     soilMoisture,
     soilCondition,
     soilSensorOk,
-    temperature: dhtSensorOk ? temperature : null,
+    temperature: sensorTemperature,
     humidity: dhtSensorOk ? humidity : null,
     dhtSensorOk,
     cropKey: crop.key,
     cropName: crop.name,
-    pumpStatus,
-    recommendation: buildRecommendation({
-      soilMoisture,
-      temperature: dhtSensorOk ? temperature : null,
-      rainfall: weatherData.rainfall,
-      crop,
-    }),
+    decision,
+    // Kept for API compatibility. pumpStatus is a RECOMMENDATION, not the real pump state.
+    pumpStatus: decision.pumpRecommended ? "ON" : "OFF",
+    recommendation: decision.message,
   });
 };
 

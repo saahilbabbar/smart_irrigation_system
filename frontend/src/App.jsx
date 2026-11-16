@@ -25,8 +25,11 @@ import {
   FaSeedling,
 } from "react-icons/fa";
 
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:3001/api/sensors").replace(/\/$/, "");
-const SETTINGS_URL = API_BASE_URL.replace(/\/sensors$/, "/settings");
+import { API_BASE_URL, SETTINGS_URL } from "./api";
+import UsersPanel from "./UsersPanel.jsx";
+import ChangePassword from "./ChangePassword.jsx";
+
+const HISTORY_RANGES = [["live", "Live"], [1, "1 h"], [24, "24 h"], [168, "7 days"]];
 
 // Keep the standard crop choices available while the API is starting or offline.
 const BUILT_IN_CROPS = [
@@ -37,17 +40,26 @@ const BUILT_IN_CROPS = [
   { key: "onion", name: "Onion", minMoisture: 50, maxMoisture: 70, waterRequirement: 20, waterRequirementUnit: "mm/week" },
 ];
 
-const formatHistoryPoint = (data) => ({
+const formatHistoryPoint = (data, withDate = false) => ({
   id: data._id || data.createdAt,
-  time: data.createdAt
-    ? new Date(data.createdAt).toLocaleTimeString()
-    : new Date().toLocaleTimeString(),
+  time: (() => {
+    const date = data.createdAt ? new Date(data.createdAt) : new Date();
+    return withDate
+      ? date.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })
+      : date.toLocaleTimeString();
+  })(),
   moisture: data.soilMoisture ?? null,
   temperature: data.temperature ?? null,
   humidity: data.humidity ?? null,
 });
 
-function App() {
+function App({ user, onSignOut }) {
+  const isAdmin = user.role === "admin";
+  const [historyRange, setHistoryRange] = useState("live");
+  const historyRangeRef = useRef("live");
+  const [csvMessage, setCsvMessage] = useState("");
+  const [showChangePassword, setShowChangePassword] = useState(false);
+  const usersRef = useRef(null);
   const [sensorData, setSensorData] = useState(null);
   const [apiOnline, setApiOnline] = useState(null);
   const [sensorFetchError, setSensorFetchError] = useState("");
@@ -155,25 +167,25 @@ function App() {
   };
 
   // FETCH STORED HISTORY
-  const fetchHistoryData = useCallback(async () => {
+  // "live": latest 20 raw readings, then appended every 5 s.
+  // N hours: server-averaged buckets, refreshed every minute.
+  const fetchHistoryData = useCallback(async (range) => {
     try {
-      const response = await axios.get(
-        `${API_BASE_URL}/history`
-      );
+      const response = await axios.get(`${API_BASE_URL}/history`, {
+        params: range === "live" ? {} : { hours: range },
+      });
       setApiOnline(true);
 
       const storedHistory = response.data || [];
 
       setHistory(
         storedHistory.map((data) =>
-          formatHistoryPoint(data)
+          formatHistoryPoint(data, range !== "live" && range >= 24)
         )
       );
 
-      if (storedHistory.length > 0) {
-        setSensorData(
-          storedHistory[storedHistory.length - 1]
-        );
+      if (range === "live" && storedHistory.length > 0) {
+        setSensorData((current) => current || storedHistory[storedHistory.length - 1]);
       }
     } catch (error) {
       console.log("History Fetch Error:", error);
@@ -204,6 +216,8 @@ function App() {
         response.data
       );
 
+      if (historyRangeRef.current !== "live") return;
+
       setHistory((prev) => {
         const alreadyExists = prev.some(
           (item) => item.id === nextPoint.id
@@ -224,7 +238,6 @@ function App() {
   useEffect(() => {
     const initialFetch = setTimeout(() => {
       setClockNow(Date.now());
-      fetchHistoryData();
       fetchSensorData();
       fetchCropRequirements();
       fetchActiveCrop();
@@ -241,7 +254,37 @@ function App() {
       clearTimeout(initialFetch);
       clearInterval(interval);
     };
-  }, [fetchHistoryData, fetchSensorData, fetchCropRequirements, fetchActiveCrop, fetchLocation]);
+  }, [fetchSensorData, fetchCropRequirements, fetchActiveCrop, fetchLocation]);
+
+  useEffect(() => {
+    historyRangeRef.current = historyRange;
+    const load = () => fetchHistoryData(historyRange);
+    const initial = setTimeout(load, 0);
+    const interval = historyRange === "live" ? null : setInterval(load, 60000);
+    return () => {
+      clearTimeout(initial);
+      if (interval) clearInterval(interval);
+    };
+  }, [historyRange, fetchHistoryData]);
+
+  const downloadCsv = async () => {
+    const hours = historyRange === "live" ? 24 : historyRange;
+    setCsvMessage("");
+    try {
+      const response = await axios.get(`${API_BASE_URL}/export.csv`, { params: { hours }, responseType: "blob" });
+      const match = /filename="([^"]+)"/.exec(response.headers["content-disposition"] || "");
+      const url = URL.createObjectURL(response.data);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = match?.[1] || `smartfarm-readings-${hours}h.csv`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch {
+      setCsvMessage("Could not download the CSV.");
+    }
+  };
 
   const customCropError = useMemo(() => {
     if (selectedCropKey !== "custom") return "";
@@ -342,6 +385,7 @@ function App() {
     irrigation: irrigationRef,
     sensors: sensorsRef,
     reports: reportsRef,
+    users: usersRef,
   };
 
   const navigateTo = (section) => {
@@ -355,6 +399,7 @@ function App() {
     ["irrigation", "⌁", "Irrigation"],
     ["sensors", "◉", "Sensors"],
     ["reports", "✦", "Reports"],
+    ...(isAdmin ? [["users", "☺", "Users"]] : []),
   ];
 
   return (
@@ -382,7 +427,13 @@ function App() {
             </button>
           ))}
         </nav>
-        <div style={styles.sidebarFooter}>Live field insights<br />updated every 5 seconds</div>
+        <div style={styles.sidebarFooter}>
+          Signed in as <strong>{user.name}</strong> ({user.role})
+          {showChangePassword
+            ? <ChangePassword onDone={() => setShowChangePassword(false)} />
+            : <button type="button" onClick={() => setShowChangePassword(true)} style={styles.signOutButton}>Change password</button>}
+          <button type="button" onClick={onSignOut} style={styles.signOutButton}>Sign out</button>
+        </div>
       </aside>
 
       {/* MAIN */}
@@ -427,14 +478,14 @@ function App() {
               />
 
               <DashboardCard
-                title="Temperature"
+                title="Temperature (DHT22)"
                 value={sensorData.temperature == null ? "Unavailable" : `${sensorData.temperature}°C`}
                 icon={<FaTemperatureHigh />}
                 color="#eca06b"
               />
 
               <DashboardCard
-                title="Humidity"
+                title="Humidity (DHT22)"
                 value={sensorData.humidity == null ? "Unavailable" : `${sensorData.humidity}%`}
                 icon={<FaTint />}
                 color="#6abed3"
@@ -459,10 +510,11 @@ function App() {
             <motion.div ref={irrigationRef} initial={{ opacity: 0 }} animate={{ opacity: 1 }} style={styles.cropCard}>
               <h2>🌾 Crop-aware Irrigation</h2>
               <label style={styles.cropLabel} htmlFor="crop-select">Crop being monitored</label>
-              <select id="crop-select" value={selectedCropKey} onChange={(event) => { setCustomCropSaveMessage(""); changeActiveCrop(event.target.value); }} style={styles.cropSelect}>
+              <select id="crop-select" value={selectedCropKey} disabled={!isAdmin} onChange={(event) => { setCustomCropSaveMessage(""); changeActiveCrop(event.target.value); }} style={styles.cropSelect}>
                 {cropOptions.map((crop) => <option key={crop.key} value={crop.key}>{crop.name}</option>)}
-                <option value="custom">Custom Crop</option>
+                {isAdmin && <option value="custom">Custom Crop</option>}
               </select>
+              {!isAdmin && <p style={styles.locationSource}>Only an admin can change the crop.</p>}
 
               {selectedCropKey === "custom" && (
                 <div style={styles.customCropGrid}>
@@ -514,6 +566,7 @@ function App() {
                   <p style={styles.locationSource}>
                     {{ browser: "From this laptop's location", place: `Typed place: ${locationInfo?.place}`, ip: "Approximate (from internet connection)" }[locationInfo?.source] || ""}
                   </p>
+                  {isAdmin && (<>
                   <button type="button" onClick={useLaptopLocation} disabled={isLocating} style={styles.saveCropButton}>
                     {isLocating ? "Locating..." : "Use my laptop's location"}
                   </button>
@@ -531,6 +584,7 @@ function App() {
                     </button>
                   </div>
                   {locationMessage && <p style={styles.locationSource}>{locationMessage}</p>}
+                  </>)}
                 </div>
 
                 <div>
@@ -547,6 +601,16 @@ function App() {
                   <p>
                     {sensorData.rainfall == null ? "Unavailable" : `${sensorData.rainfall} mm`}
                   </p>
+                </div>
+
+                <div>
+                  <h3>🌡 Outdoor weather</h3>
+                  <p>
+                    {sensorData.weatherTemperature == null
+                      ? "Unavailable"
+                      : `${sensorData.weatherTemperature}°C · ${sensorData.weatherHumidity}% humidity`}
+                  </p>
+                  <p style={styles.locationSource}>WeatherAPI, not the DHT22 sensor</p>
                 </div>
 
                 <div>
@@ -604,7 +668,28 @@ function App() {
 
             {/* CHARTS */}
 
-            <div ref={analyticsRef} style={styles.chartGrid}>
+            <div ref={analyticsRef} style={styles.chartToolbar}>
+              <div role="group" aria-label="Chart time range" style={styles.rangeGroup}>
+                {HISTORY_RANGES.map(([range, label]) => (
+                  <button
+                    key={range}
+                    type="button"
+                    aria-pressed={historyRange === range}
+                    onClick={() => setHistoryRange(range)}
+                    style={{ ...styles.rangeButton, ...(historyRange === range ? styles.rangeButtonActive : {}) }}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <button type="button" onClick={downloadCsv} style={styles.saveCropButton}>
+                Export CSV ({historyRange === "live" ? "24 h" : HISTORY_RANGES.find(([r]) => r === historyRange)[1]})
+              </button>
+              {historyRange !== "live" && <span style={styles.locationSource}>Averaged over time; CSV has every raw reading.</span>}
+              {csvMessage && <span role="alert" style={styles.validationError}>{csvMessage}</span>}
+            </div>
+
+            <div style={styles.chartGrid}>
               {/* MOISTURE */}
 
               <div style={styles.chartCard}>
@@ -718,6 +803,12 @@ function App() {
                 {getHealthStatus()}
               </h1>
             </motion.div>
+
+            {isAdmin && (
+              <div ref={usersRef} style={{ scrollMarginTop: "24px", marginTop: "28px" }}>
+                <UsersPanel currentUser={user} />
+              </div>
+            )}
           </>
         )}
       </div>
@@ -1034,6 +1125,49 @@ const styles = {
     paddingLeft: "20px",
     lineHeight: 1.7,
     color: "#3d6555",
+  },
+
+  signOutButton: {
+    display: "block",
+    marginTop: "10px",
+    padding: "8px 12px",
+    border: "1px solid #c8ebd9",
+    borderRadius: "8px",
+    background: "#ffffff",
+    color: "#266b54",
+    fontWeight: 650,
+    cursor: "pointer",
+  },
+
+  chartToolbar: {
+    scrollMarginTop: "24px",
+    display: "flex",
+    flexWrap: "wrap",
+    alignItems: "center",
+    gap: "12px",
+    marginBottom: "16px",
+  },
+
+  rangeGroup: {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: "6px",
+  },
+
+  rangeButton: {
+    padding: "8px 14px",
+    border: "1px solid #c9e2d5",
+    borderRadius: "999px",
+    background: "#fbfffc",
+    color: "#55736a",
+    fontWeight: 650,
+    cursor: "pointer",
+  },
+
+  rangeButtonActive: {
+    background: "#dff5e9",
+    borderColor: "#9fd8bb",
+    color: "#266b54",
   },
 
   locationSource: {

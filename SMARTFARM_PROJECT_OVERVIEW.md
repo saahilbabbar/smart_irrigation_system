@@ -97,8 +97,8 @@ The networking requirement is that the ESP32 posts to the laptop's **LAN IPv4** 
 | `services/weatherService.js` | WeatherAPI client with a 5-minute in-memory cache and a 4-second timeout, the backend recommendation function and the hardware ingestion function | ✅ |
 | `services/weatherService.js → fetchAndStoreWeatherData` | **Legacy code that invents soil moisture from the weather.** Exported but never called | ⚠ dead code that fabricates readings |
 | `controllers/sensorController.js` | **Generates random sensor values** and saves them. Not routed | ⚠ dead code that fabricates readings |
-| `controllers/authController.js`, `routes/authRoutes.js` | Register/login with bcrypt hashing and a JWT that lasts 7 days | 🟡 the token is never checked anywhere |
-| `middleware/authMiddleware.js` | **Empty file** | ⏳ |
+| `controllers/authController.js`, `routes/authRoutes.js` | One-time admin setup, sign-in (bcrypt, 7-day JWT, 10 failed attempts per IP per 15 min), admin-only user management | ✅ |
+| `middleware/authMiddleware.js` | `requireAuth` (Bearer JWT, reloads the user on every request) and `requireAdmin` | ✅ |
 | `models/*` | Described in §8 | ✅ |
 
 ### 7.2 Frontend (`frontend/src/App.jsx`, single component of about 1,000 lines)
@@ -144,7 +144,7 @@ Note: the ingestion service spreads the weather object into the document and the
 `key` (unique, `custom-<ObjectId>`), `name`, `minMoisture`, `maxMoisture` (0–100), `waterRequirement` (> 0), `waterRequirementUnit`, timestamps.
 
 ### `User` (`users`)
-`name`, `email` (unique), `password` (bcrypt hash), `createdAt`.
+`name`, `email` (unique, lower-case), `password` (bcrypt hash, never returned by queries), `role` (`admin`/`viewer`, default viewer), `createdAt`.
 
 ## 9. API documentation
 
@@ -154,17 +154,26 @@ Base URL: `http://<host>:3001`
 |---|---|---|---|
 | GET | `/` | — | Health text "Smart Irrigation API Running" |
 | POST | `/api/sensors` | `x-device-api-key` must equal `DEVICE_API_KEY` | Ingest one reading |
-| GET | `/api/sensors` | — | Latest reading, or `null` |
-| GET | `/api/sensors/history` | — | The latest 20 readings, oldest first |
-| GET | `/api/sensors/crops` | — | Built-in plus custom crops |
-| POST | `/api/sensors/crops/custom` | — ⚠ | Create a custom crop |
-| GET | `/api/settings/location` | — | The current weather location `{source: "browser"\|"ip", lat, lon, name}` |
-| PUT | `/api/settings/location` | — ⚠ | Save `{lat, lon}` (from the dashboard's "Use my laptop's location" button) |
-| DELETE | `/api/settings/location` | — ⚠ | Go back to the IP lookup |
-| GET | `/api/settings/crop` | — | The active crop |
-| PUT | `/api/settings/crop` | — ⚠ | Set the active crop `{cropKey}` (built-in or saved custom) |
-| POST | `/api/auth/register` | — | Create a user (the response includes the password hash ⚠) |
-| POST | `/api/auth/login` | — | Returns a JWT (not used anywhere yet) |
+| GET | `/api/sensors` | user | Latest reading plus `currentDecision`, or `null` |
+| GET | `/api/sensors/history` | user | The latest 20 readings; `?hours=N` (≤ 720) averages them into about 200 time buckets |
+| GET | `/api/sensors/export.csv` | user | Raw readings as CSV, `?hours=N` (default 24) |
+| GET | `/api/sensors/crops` | user | Built-in plus custom crops |
+| POST | `/api/sensors/crops/custom` | admin | Create a custom crop |
+| GET | `/api/settings/location` | user | The current weather location `{source: "browser"\|"ip", lat, lon, name}` |
+| PUT | `/api/settings/location` | admin | Save `{lat, lon}` (from the dashboard's "Use my laptop's location" button) |
+| DELETE | `/api/settings/location` | admin | Go back to the IP lookup |
+| GET | `/api/settings/crop` | user | The active crop |
+| PUT | `/api/settings/crop` | admin | Set the active crop `{cropKey}` (built-in or saved custom) |
+| GET | `/api/auth/status` | — | `{needsSetup}`: true while no admin exists |
+| POST | `/api/auth/setup` | — | Create the first admin (only while none exists) |
+| POST | `/api/auth/login` | — | `{token, user}` |
+| GET | `/api/auth/me` | user | The signed-in user |
+| GET/POST | `/api/auth/users` | admin | List users / add a user `{name, email, password, role}` |
+| PATCH/DELETE | `/api/auth/users/:id` | admin | Change the role / remove a user (not your own account) |
+| PUT | `/api/auth/users/:id/password` | admin | Set a new temporary password `{newPassword}` for another user |
+| PUT | `/api/auth/me/password` | user | Change your own password `{currentPassword, newPassword}` |
+
+There is no public registration (`/api/auth/register` was removed). "user" = any signed-in account; send `Authorization: Bearer <token>`. The ESP32's `POST /api/sensors` uses the device key, not a user login.
 
 ### `POST /api/sensors` contract
 
@@ -241,7 +250,8 @@ Each decision includes `reasons[]` in plain language, for example "Soil moisture
 | Crop catalog + custom crops in MongoDB | ✅ |
 | Crop-aware recommendation | ✅ a single backend engine with reasons; the active crop is saved in `FarmSettings` |
 | WeatherAPI integration | 🟡 current conditions plus a 6-hour rain forecast; weather temperature/humidity discarded; location comes from the laptop's browser location (`PUT /api/settings/location`) or the IP lookup (`auto:ip`) |
-| User registration/login | 🟡 works in isolation; no middleware, no frontend, no route protection |
+| Multi-user login | ✅ one shared farm, `admin`/`viewer` roles; sign-in required to view; admin Users panel |
+| History ranges + CSV export | ✅ Live / 1 h / 24 h / 7 days charts; CSV of the raw readings |
 | Pump control | 🔧 not implemented (correct for now); the `pumpStatus` field name is misleading |
 | Additional sensors, analytics, crop management, prediction | ⏳ |
 | Automated tests | ⏳ none exist |

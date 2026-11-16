@@ -8,8 +8,12 @@ const {
   getCachedCurrentWeather,
   clearWeatherCache,
 } = require("../services/weatherService");
+const { requireAuth, requireAdmin } = require("../middleware/authMiddleware");
 
 const router = express.Router();
+
+// Any signed-in user can read settings; only an admin can change them.
+router.use(requireAuth);
 
 const saveSettings = (update) => FarmSettings.findOneAndUpdate(
   { key: "default" },
@@ -45,7 +49,7 @@ router.get("/location", async (req, res) => {
 });
 
 // Body: { lat, lon } from the browser's geolocation, or { place } typed by the user.
-router.put("/location", async (req, res) => {
+router.put("/location", requireAdmin, async (req, res) => {
   const { lat, lon, place } = req.body || {};
   const validCoord = (v, limit) => typeof v === "number" && Number.isFinite(v) && Math.abs(v) <= limit;
 
@@ -82,7 +86,7 @@ router.put("/location", async (req, res) => {
 });
 
 // Revert to WeatherAPI's IP-based lookup (keeps other settings such as the crop).
-router.delete("/location", async (req, res) => {
+router.delete("/location", requireAdmin, async (req, res) => {
   try {
     await saveSettings({ lat: null, lon: null, place: null });
     clearWeatherCache();
@@ -105,7 +109,7 @@ router.get("/crop", async (req, res) => {
   }
 });
 
-router.put("/crop", async (req, res) => {
+router.put("/crop", requireAdmin, async (req, res) => {
   const { cropKey } = req.body || {};
   if (typeof cropKey !== "string" || !cropKey.trim()) {
     return res.status(400).json({ error: "cropKey is required" });

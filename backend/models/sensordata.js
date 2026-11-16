@@ -73,6 +73,17 @@ const SensorDataSchema = new mongoose.Schema({
     default: null,
   },
 
+  // WeatherAPI air temperature/humidity: external context, NOT sensor readings.
+  weatherTemperature: {
+    type: Number,
+    default: null,
+  },
+
+  weatherHumidity: {
+    type: Number,
+    default: null,
+  },
+
   // WeatherAPI hourly forecast summary for the next forecastWindowHours.
   forecastRainMm: {
     type: Number,
@@ -122,5 +133,8 @@ const SensorDataSchema = new mongoose.Schema({
     default: Date.now,
   },
 });
+
+// Latest/history/export queries filter on soilSensorOk and sort/range on createdAt.
+SensorDataSchema.index({ createdAt: -1 });
 
 module.exports = mongoose.model("SensorData", SensorDataSchema);

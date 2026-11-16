@@ -42,7 +42,7 @@ Priority: **P0** = do now · **P1** = next · **P2** = after that · **P3** = wh
 - **Hardware:** an ESP32 with both sensors.
 - **Testing:** that is the item itself.
 
-### A6. Small backend corrections: P1 · S
+### A6. Small backend corrections: P1 · S · ✅ done (2026-11-16)
 - Respect `process.env.PORT || 3001`. Call `dotenv.config()` only once.
 - Add an index on `createdAt` to `SensorData`.
 - Check that the DHT22 temperature is within its −40 to 80 °C range.
@@ -72,12 +72,12 @@ Priority: **P0** = do now · **P1** = next · **P2** = after that · **P3** = wh
 - **Backend:** extend the weather cache (forecasts can be cached for 30–60 min). **DB:** store `forecastRainMm`, `forecastRainChance` on each reading. **Frontend:** a forecast line in the environment panel.
 - **Testing:** unit tests with a mocked forecast; a manual check against the WeatherAPI response.
 
-### B4. Store weather temperature/humidity separately: P2 · S
+### B4. Store weather temperature/humidity separately: P2 · S · ✅ done (2026-11-16)
 - **What:** keep WeatherAPI's values as `weatherTemperature`/`weatherHumidity` instead of throwing them away, and show them labelled "Weather (WeatherAPI)" next to "Sensor (DHT22)".
 - **Why:** it is useful context, and comparing the two helps catch a faulty DHT22. It must never replace the sensor values.
 - **Testing:** with the DHT22 offline, `temperature` is null while `weatherTemperature` is filled in.
 
-### B5. History with date ranges and CSV export: P1 · M
+### B5. History with date ranges and CSV export: P1 · M · ✅ done (2026-11-16)
 - **What:** `GET /api/sensors/history?from=&to=&limit=` (with a capped limit) and `GET /api/sensors/export.csv?from=&to=`. The dashboard gets range presets (1 h / 24 h / 7 d) and an "Export CSV" button.
 - **Why:** this is needed for the project report's results section and for any later analysis.
 - **DB:** uses the `createdAt` index from A6.
@@ -112,7 +112,7 @@ Priority: **P0** = do now · **P1** = next · **P2** = after that · **P3** = wh
 - **Why:** this is the last step of the automation loop, but it is the riskiest part.
 - **Testing:** test each safety rule on the bench with the pump disconnected first, then a supervised wet test.
 
-### C4. Authentication for control and settings routes: P2 · M
+### C4. Authentication for control and settings routes: P2 · M · ✅ done (2026-11-16)
 - **What:** implement `authMiddleware.js` (JWT), protect `PUT /settings`, `POST /crops/custom` and every pump route, and add a login page. Keep the device key for ingestion. Restrict CORS to the dashboard's origin.
 - **Why:** this is required before the pump can be controlled remotely. Until then it is low risk on a LAN.
 

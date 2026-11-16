@@ -60,8 +60,9 @@ const getCurrentWeather = async (query) => {
   return {
     ...summariseForecast(forecast?.forecastday, Math.floor(Date.now() / 1000), FORECAST_WINDOW_HOURS),
     location: [place?.name, place?.region].filter(Boolean).join(", ") || null,
-    temperature: weather.temp_c,
-    humidity: weather.humidity,
+    // Named separately so they can never overwrite DHT22 temperature/humidity.
+    weatherTemperature: weather.temp_c,
+    weatherHumidity: weather.humidity,
     rainfall: weather.precip_mm,
     cloud: weather.cloud,
     windSpeed: weather.wind_kph,
